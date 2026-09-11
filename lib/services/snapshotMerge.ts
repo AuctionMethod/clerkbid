@@ -16,6 +16,30 @@ function parseDate(s: string): Date {
   return d;
 }
 
+function invoiceSnapshotFieldsEqual(
+  local: Invoice,
+  server: EventExportPayload["invoices"][number],
+  resolvedBidderId: number
+): boolean {
+  return (
+    local.bidderId === resolvedBidderId &&
+    local.invoiceNumber === server.invoiceNumber &&
+    roundMoney(local.subtotal) === roundMoney(server.subtotal) &&
+    roundMoney(local.buyersPremiumAmount) ===
+      roundMoney(server.buyersPremiumAmount) &&
+    roundMoney(local.taxAmount) === roundMoney(server.taxAmount) &&
+    roundMoney(local.total) === roundMoney(server.total) &&
+    local.status === server.status &&
+    (local.paymentMethod ?? undefined) === (server.paymentMethod ?? undefined) &&
+    safeMs(local.paymentDate) === safeMs(server.paymentDate) &&
+    (local.buyersPremiumRate ?? undefined) ===
+      (server.buyersPremiumRate ?? undefined) &&
+    (local.taxRate ?? undefined) === (server.taxRate ?? undefined) &&
+    JSON.stringify(local.manualLines ?? []) ===
+      JSON.stringify(server.manualLines ?? [])
+  );
+}
+
 export type MergeSummary = {
   biddersAdded: number;
   biddersUpdated: number;
@@ -302,7 +326,10 @@ async function mergeImpl(
       invoiceIdBySyncKey.set(sk, newId);
       summary.invoicesAdded++;
     } else {
-      if (safeMs(sinv.generatedAt) > safeMs(local.generatedAt)) {
+      if (
+        safeMs(sinv.generatedAt) > safeMs(local.generatedAt) &&
+        !invoiceSnapshotFieldsEqual(local, sinv, resolvedBidderId)
+      ) {
         await db.invoices.update(local.id!, {
           bidderId: resolvedBidderId,
           invoiceNumber: sinv.invoiceNumber,

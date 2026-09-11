@@ -92,10 +92,10 @@ export type RefreshEventFromCloudResult =
 
 /**
  * If the server snapshot is newer than our baseline (`lastCloudPullAt`, else
- * `lastCloudPushAt`), incorporate server changes into local Dexie. When local
- * data has unpushed edits, uses entity-level merge to preserve both sides'
- * changes. When no local edits exist, does a full replace (faster).
- * Skips when op-sync is on and this event has pending outbox rows (would lose ops).
+ * `lastCloudPushAt`), merge server entities into local Dexie. Auto-refresh
+ * never full-replaces (that delete+reinsert remounts invoice rows). Explicit
+ * Restore still uses `replaceEventFromPayload`.
+ * Skips when op-sync is on and this event has pending outbox rows.
  */
 export async function refreshEventFromCloudIfServerNewer(
   db: AuctionDB,
@@ -119,11 +119,7 @@ export async function refreshEventFromCloudIfServerNewer(
   ) {
     return { refreshed: false, reason: "not_newer" };
   }
-  if (hasUnpushedLocalEventMetadataEdits(ev)) {
-    await mergeServerSnapshotIntoLocal(db, eventId, snap.payload);
-  } else {
-    await replaceEventFromPayload(db, eventId, snap.payload);
-  }
+  await mergeServerSnapshotIntoLocal(db, eventId, snap.payload);
   const serverTime = new Date(snap.updatedAt);
   await db.events.update(eventId, {
     lastCloudPullAt: serverTime,
@@ -134,8 +130,7 @@ export async function refreshEventFromCloudIfServerNewer(
 
 /**
  * For each cloud list entry that matches a local event, pull the snapshot when the server
- * copy is newer than `lastCloudPullAt`. When local data has unpushed edits, uses
- * entity-level merge instead of full replace to preserve both sides' changes.
+ * copy is newer than the local baseline and merge it in (never auto-replace).
  */
 export async function refreshStaleLocalEventsFromList(
   db: AuctionDB,
@@ -183,11 +178,7 @@ export async function refreshStaleLocalEventsFromList(
       skipped += 1;
       continue;
     }
-    if (hasUnpushedLocalEventMetadataEdits(local)) {
-      await mergeServerSnapshotIntoLocal(db, local.id, snap.payload);
-    } else {
-      await replaceEventFromPayload(db, local.id, snap.payload);
-    }
+    await mergeServerSnapshotIntoLocal(db, local.id, snap.payload);
     const serverTime = new Date(snap.updatedAt);
     await db.events.update(local.id, {
       lastCloudPullAt: serverTime,
@@ -226,7 +217,7 @@ export async function pushEventSnapshot(
   payload: EventExportPayload,
   options?: { force?: boolean }
 ): Promise<
-  | { ok: true; updatedAt: string }
+  | { ok: true; updatedAt: string; unchanged?: boolean }
   | { ok: false; status: number; conflict?: boolean; serverUpdatedAt?: string }
 > {
   const res = await fetch("/api/sync/push/", {
@@ -251,8 +242,12 @@ export async function pushEventSnapshot(
     };
   }
   if (!res.ok) return { ok: false, status: res.status };
-  const data = (await res.json()) as { updatedAt: string };
-  return { ok: true, updatedAt: data.updatedAt };
+  const data = (await res.json()) as { updatedAt: string; unchanged?: boolean };
+  return {
+    ok: true,
+    updatedAt: data.updatedAt,
+    unchanged: data.unchanged === true,
+  };
 }
 
 /** Removes the server snapshot and op log for this event (org-scoped). */
@@ -295,7 +290,7 @@ export async function pushCurrentEvent(
   eventId: number,
   options?: { force?: boolean }
 ): Promise<
-  | { ok: true; updatedAt: string }
+  | { ok: true; updatedAt: string; unchanged?: boolean }
   | { ok: false; status: number; conflict?: boolean; serverUpdatedAt?: string }
 > {
   const payload = await buildEventExport(db, eventId);
@@ -315,7 +310,7 @@ export async function pushEventWithAutoMerge(
   eventId: number,
   options?: { force?: boolean }
 ): Promise<
-  | { ok: true; updatedAt: string; autoMerged: boolean }
+  | { ok: true; updatedAt: string; autoMerged: boolean; unchanged?: boolean }
   | { ok: false; status: number; conflict?: boolean; serverUpdatedAt?: string }
 > {
   const firstTry = await pushCurrentEvent(db, eventId, options);
@@ -387,7 +382,9 @@ export async function flushSingleEventToCloudSnapshot(
 ): Promise<boolean> {
   const result = await pushEventWithAutoMerge(db, eventId);
   if (!result.ok) return false;
-  await recordSuccessfulPush(db, eventId, result.updatedAt);
+  if (!result.unchanged) {
+    await recordSuccessfulPush(db, eventId, result.updatedAt);
+  }
   return true;
 }
 
@@ -490,9 +487,11 @@ export async function pushAllLocalEvents(
     const result = await pushEventWithAutoMerge(db, id, options);
     if (result.ok) {
       okCount += 1;
-      await recordSuccessfulPush(db, id, result.updatedAt);
-      lastUpdatedAt = result.updatedAt;
-      snapshotPushedOkEventIds.push(id);
+      if (!result.unchanged) {
+        await recordSuccessfulPush(db, id, result.updatedAt);
+        lastUpdatedAt = result.updatedAt;
+        snapshotPushedOkEventIds.push(id);
+      }
     } else if (result.conflict) {
       conflictCount += 1;
       snapshotConflicts.push({

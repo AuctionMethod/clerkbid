@@ -22,6 +22,10 @@ import {
   masterBidderFieldsDiffer,
   updateMasterBidderFromEvent,
 } from "@/lib/directory/upsert";
+import {
+  eventRosterNumberTakenByAnother,
+  rosterNumberChanged,
+} from "@/lib/roster/eventNumberConflict";
 
 const EMPTY_MASTERS: MasterBidder[] = [];
 
@@ -197,17 +201,21 @@ export function BidderForm({
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const taken = await db.bidders
-        .where("[eventId+paddleNumber]")
-        .equals([eventId, paddle])
-        .first();
-      const editingId = editing?.id;
-      if (
-        taken != null &&
-        (typeof editingId !== "number" || taken.id !== editingId)
-      ) {
-        setError(`Paddle #${paddle} is already registered for this event.`);
-        return;
+      if (rosterNumberChanged(editing?.paddleNumber, paddle)) {
+        const eventBidders = await db.bidders
+          .where("eventId")
+          .equals(eventId)
+          .toArray();
+        if (
+          eventRosterNumberTakenByAnother(
+            eventBidders.map((b) => ({ id: b.id, number: b.paddleNumber })),
+            paddle,
+            editing?.id
+          )
+        ) {
+          setError(`Paddle #${paddle} is already registered for this event.`);
+          return;
+        }
       }
       const now = new Date();
       let linkKey = masterSyncKey;
@@ -217,11 +225,26 @@ export function BidderForm({
       }
       try {
         await mutateWithParentEventTouch(db, eventId, "bidders", async () => {
-          if (editing?.id != null) {
-            const existing = await db.bidders.get(editing.id);
-            if (!existing) return;
+          if (editing) {
+            let existing =
+              editing.id != null
+                ? await db.bidders.get(editing.id)
+                : undefined;
+            if (!existing) {
+              existing = await db.bidders
+                .where("eventId")
+                .equals(eventId)
+                .filter((b) => b.paddleNumber === editing.paddleNumber)
+                .first();
+            }
+            if (!existing?.id) {
+              throw new Error(
+                "Could not find this bidder. Close the form and try again."
+              );
+            }
             const next: Bidder = {
               ...existing,
+              id: existing.id,
               paddleNumber: paddle,
               firstName: fields.firstName,
               lastName: fields.lastName,

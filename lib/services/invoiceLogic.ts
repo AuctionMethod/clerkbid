@@ -148,21 +148,23 @@ export async function bidderIdsWithSales(
 export type UpsertResult =
   | { kind: "created"; invoiceId: number }
   | { kind: "updated"; invoiceId: number }
+  | { kind: "unchanged"; invoiceId: number }
   | { kind: "skipped_paid" }
   | { kind: "no_sales" };
 
 /**
  * Recompute persisted totals from sales + manual lines + effective rates.
- * No-op for paid invoices.
+ * No-op for paid invoices and when unpaid totals are already current.
+ * Returns whether the invoice (or parent event) was written.
  */
 export async function recalculateAndPersistInvoice(
   db: AuctionDB,
   invoiceId: number,
   event: AuctionEvent,
   options?: { touchGeneratedAt?: boolean }
-): Promise<void> {
+): Promise<boolean> {
   const inv = await db.invoices.get(invoiceId);
-  if (inv?.id == null || inv.status === "paid") return;
+  if (inv?.id == null || inv.status === "paid") return false;
 
   const lineSales = await getSalesForInvoice(db, invoiceId);
   const hammerSubtotal = roundMoney(
@@ -174,6 +176,13 @@ export async function recalculateAndPersistInvoice(
     inv,
     event
   );
+  const totalsUnchanged =
+    roundMoney(inv.subtotal) === parts.subtotal &&
+    roundMoney(inv.buyersPremiumAmount) === parts.buyersPremiumAmount &&
+    roundMoney(inv.taxAmount) === parts.taxAmount &&
+    roundMoney(inv.total) === parts.total;
+  if (totalsUnchanged) return false;
+
   await db.transaction("rw", [db.events, db.invoices], async () => {
     await db.events.update(inv.eventId, { updatedAt: new Date() });
     await db.invoices.update(invoiceId, {
@@ -184,6 +193,7 @@ export async function recalculateAndPersistInvoice(
       ...(options?.touchGeneratedAt ? { generatedAt: new Date() } : {}),
     });
   });
+  return true;
 }
 
 /**
@@ -220,7 +230,8 @@ export async function upsertInvoiceForBidder(
   const now = new Date();
 
   if (unpaid?.id != null) {
-    if (unallocated.length > 0) {
+    const allocated = unallocated.length > 0;
+    if (allocated) {
       await db.transaction("rw", [db.events, db.sales], async () => {
         await db.events.update(eventId, { updatedAt: new Date() });
         for (const s of unallocated) {
@@ -230,13 +241,16 @@ export async function upsertInvoiceForBidder(
         }
       });
     }
-    await recalculateAndPersistInvoice(db, unpaid.id, event, {
-      touchGeneratedAt: true,
+    const wrote = await recalculateAndPersistInvoice(db, unpaid.id, event, {
+      touchGeneratedAt: allocated,
     });
-    if (event.syncId) {
+    if ((wrote || allocated) && event.syncId) {
       await enqueueInvoicePut(db, event.syncId, unpaid.id);
     }
-    return { kind: "updated", invoiceId: unpaid.id };
+    if (wrote || allocated) {
+      return { kind: "updated", invoiceId: unpaid.id };
+    }
+    return { kind: "unchanged", invoiceId: unpaid.id };
   }
 
   if (unallocated.length > 0) {

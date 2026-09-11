@@ -8,8 +8,10 @@ import {
   effectiveInvoiceBuyersPremiumRate,
   effectiveInvoiceTaxRate,
   formatInvoiceNumber,
+  recalculateAndPersistInvoice,
   resolveInvoiceForOpenDetail,
   roundMoney,
+  upsertInvoiceForBidder,
 } from "./invoiceLogic";
 
 describe("roundMoney", () => {
@@ -192,5 +194,98 @@ describe("resolveInvoiceForOpenDetail", () => {
       bidderId,
     });
     expect(found?.id).toBe(newId);
+  });
+});
+
+describe("recalculateAndPersistInvoice", () => {
+  let db: AuctionDB;
+  let eventId: number;
+  let bidderId: number;
+  let invoiceId: number;
+
+  beforeEach(async () => {
+    const uid = `inv_recalc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    db = new AuctionDB(uid);
+    eventId = (await db.events.add({
+      name: "E",
+      organizationName: "O",
+      taxRate: 0.1,
+      buyersPremiumRate: 0.1,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "evt-sync-recalc",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    bidderId = (await db.bidders.add({
+      eventId,
+      paddleNumber: 4,
+      firstName: "A",
+      lastName: "K",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    const lotId = (await db.lots.add({
+      eventId,
+      baseLotNumber: 1,
+      lotSuffix: "",
+      displayLotNumber: "1",
+      description: "Lot",
+      quantity: 1,
+      status: "sold",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    invoiceId = (await db.invoices.add({
+      eventId,
+      bidderId,
+      invoiceNumber: "1-001",
+      subtotal: 100,
+      buyersPremiumAmount: 10,
+      taxAmount: 11,
+      total: 121,
+      status: "unpaid",
+      generatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      syncKey: "inv-recalc-1",
+    })) as number;
+    await db.sales.add({
+      eventId,
+      lotId,
+      bidderId,
+      invoiceId,
+      displayLotNumber: "1",
+      paddleNumber: 4,
+      description: "Lot",
+      quantity: 1,
+      amount: 100,
+      clerkInitials: "DW",
+      createdAt: new Date(),
+    });
+  });
+
+  afterEach(async () => {
+    db.close();
+    await Dexie.delete(db.name);
+  });
+
+  it("does not write unpaid invoices when totals are already current", async () => {
+    const event = await db.events.get(eventId);
+    const before = await db.invoices.get(invoiceId);
+    const wrote = await recalculateAndPersistInvoice(db, invoiceId, event!, {
+      touchGeneratedAt: true,
+    });
+    expect(wrote).toBe(false);
+    const after = await db.invoices.get(invoiceId);
+    expect(after?.generatedAt.getTime()).toBe(before?.generatedAt.getTime());
+    expect(after?.total).toBe(121);
+  });
+
+  it("returns unchanged when generating an unpaid invoice with no new sales", async () => {
+    const event = await db.events.get(eventId);
+    const before = await db.invoices.get(invoiceId);
+    const r = await upsertInvoiceForBidder(db, event!, bidderId);
+    expect(r.kind).toBe("unchanged");
+    const after = await db.invoices.get(invoiceId);
+    expect(after?.generatedAt.getTime()).toBe(before?.generatedAt.getTime());
   });
 });

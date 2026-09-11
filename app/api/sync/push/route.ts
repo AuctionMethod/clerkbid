@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth/options";
 import { sql } from "@/lib/db/postgres";
 import { publishEventSyncNudge } from "@/lib/ably/publishEventSync";
 import { EXPORT_VERSION } from "@/lib/services/dataPorter";
+import { eventSnapshotsContentEqual } from "@/lib/services/snapshotContentEqual";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,15 +61,18 @@ export async function POST(req: Request) {
 
     const { rows: existing } = await sql<{
       updated_at: Date;
-      same: boolean;
+      payload: unknown;
     }>`
-      SELECT updated_at, (payload = ${payloadJson}::jsonb) AS same
+      SELECT updated_at, payload
       FROM event_cloud_snapshots
       WHERE vendor_id = ${vendorId} AND event_sync_id = ${eventSyncId}::uuid
       LIMIT 1
     `;
     const existingRow = existing[0];
-    if (existingRow?.same) {
+    if (
+      existingRow &&
+      eventSnapshotsContentEqual(existingRow.payload, body.payload)
+    ) {
       return NextResponse.json({
         ok: true,
         unchanged: true,

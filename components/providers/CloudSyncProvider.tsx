@@ -127,6 +127,8 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
   const ablyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  /** Ignore Ably snapshot refresh shortly after our own push (self-echo). */
+  const lastOwnSnapshotPushAtRef = useRef(0);
   /** Latest selected event id (sync; avoids stale id after `await`). */
   const currentEventIdRef = useRef<number | null>(null);
   currentEventIdRef.current = currentEventId;
@@ -241,6 +243,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       const summary = await pushAllLocalEvents(db);
       if (summary.serverUnavailable) setCloudSyncAvailable(false);
       if (summary.lastUpdatedAt) {
+        lastOwnSnapshotPushAtRef.current = Date.now();
         setLastPushAt(new Date(summary.lastUpdatedAt));
         refresh();
         setLastSyncError(null);
@@ -457,12 +460,16 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         void (async () => {
           const d = dbRef.current;
           const eid = currentEventIdRef.current;
-          if (d && eid != null) {
+          const ownPushEcho =
+            Date.now() - lastOwnSnapshotPushAtRef.current < 2_000;
+          if (d && eid != null && !ownPushEcho) {
             await flushDebouncedCloudPushBeforePullRef.current();
             const rr = await refreshEventFromCloudIfServerNewer(d, eid);
             if (rr.refreshed) refreshForSyncRef.current();
           }
-          await runBackgroundSyncCycleRef.current();
+          if (!ownPushEcho) {
+            await runBackgroundSyncCycleRef.current();
+          }
         })();
       }, 400);
     };
@@ -603,13 +610,12 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       try {
         const result = await pushEventWithAutoMerge(db, currentEventId, options);
         if (result.ok) {
-          await recordSuccessfulPush(db, currentEventId, result.updatedAt);
+          if (!result.unchanged) {
+            lastOwnSnapshotPushAtRef.current = Date.now();
+            await recordSuccessfulPush(db, currentEventId, result.updatedAt);
+            refresh();
+          }
           setLastPushAt(new Date(result.updatedAt));
-          await ensureSettingsRow(db);
-          await db.settings.update(1, {
-            lastCloudPushAt: new Date(result.updatedAt),
-          });
-          refresh();
           setRemoteCloudSnapshotAt(null);
           setLastSyncError(null);
           return { ok: true };

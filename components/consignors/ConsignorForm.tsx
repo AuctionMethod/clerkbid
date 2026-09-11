@@ -21,6 +21,10 @@ import {
   updateMasterConsignorFromEvent,
 } from "@/lib/directory/upsert";
 import { pushDirectoryToCloud } from "@/lib/directory/sync";
+import {
+  eventRosterNumberTakenByAnother,
+  rosterNumberChanged,
+} from "@/lib/roster/eventNumberConflict";
 
 const EMPTY_MASTERS: MasterConsignor[] = [];
 
@@ -207,17 +211,28 @@ export function ConsignorForm({
       setError("Name is required.");
       return;
     }
-    const taken = await db.consignors
-      .where("[eventId+consignorNumber]")
-      .equals([eventId, num])
-      .first();
-    const editingId = editing?.id;
-    if (
-      taken != null &&
-      (typeof editingId !== "number" || taken.id !== editingId)
-    ) {
-      setError(`Consignor #${num} is already registered for this event.`);
-      return;
+    const takenCheckNeeded = rosterNumberChanged(
+      editing?.consignorNumber,
+      num
+    );
+    if (takenCheckNeeded) {
+      const eventConsignors = await db.consignors
+        .where("eventId")
+        .equals(eventId)
+        .toArray();
+      if (
+        eventRosterNumberTakenByAnother(
+          eventConsignors.map((c) => ({
+            id: c.id,
+            number: c.consignorNumber,
+          })),
+          num,
+          editing?.id
+        )
+      ) {
+        setError(`Consignor #${num} is already registered for this event.`);
+        return;
+      }
     }
 
     const commission = parsedCommission();
@@ -234,11 +249,23 @@ export function ConsignorForm({
       linkKey = master.syncKey;
     }
 
-    if (editing?.id != null) {
-      const existing = await db.consignors.get(editing.id);
-      if (!existing) return;
+    if (editing) {
+      let existing =
+        editing.id != null ? await db.consignors.get(editing.id) : undefined;
+      if (!existing) {
+        existing = await db.consignors
+          .where("eventId")
+          .equals(eventId)
+          .filter((c) => c.consignorNumber === editing.consignorNumber)
+          .first();
+      }
+      if (!existing?.id) {
+        setError("Could not find this consignor. Close the form and try again.");
+        return;
+      }
       const next: Consignor = {
         ...existing,
+        id: existing.id,
         consignorNumber: num,
         name: nm,
         phone: fields.phone,

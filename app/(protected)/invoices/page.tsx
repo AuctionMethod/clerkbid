@@ -58,10 +58,10 @@ export default function InvoicesPage() {
         const bMap = new Map(bidders.map((b) => [b.id!, b]));
         return invs
           .map((inv) => ({ ...inv, bidder: bMap.get(inv.bidderId) }))
-          .sort(
-            (a, b) =>
-              new Date(b.generatedAt).getTime() -
-              new Date(a.generatedAt).getTime()
+          .sort((a, b) =>
+            a.invoiceNumber.localeCompare(b.invoiceNumber, undefined, {
+              numeric: true,
+            })
           );
       }, []),
     [currentEventId, dbReady, db]
