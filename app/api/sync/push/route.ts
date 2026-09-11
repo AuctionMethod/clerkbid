@@ -56,26 +56,38 @@ export async function POST(req: Request) {
       );
     }
 
+    const payloadJson = JSON.stringify(body.payload);
+
+    const { rows: existing } = await sql<{
+      updated_at: Date;
+      same: boolean;
+    }>`
+      SELECT updated_at, (payload = ${payloadJson}::jsonb) AS same
+      FROM event_cloud_snapshots
+      WHERE vendor_id = ${vendorId} AND event_sync_id = ${eventSyncId}::uuid
+      LIMIT 1
+    `;
+    const existingRow = existing[0];
+    if (existingRow?.same) {
+      return NextResponse.json({
+        ok: true,
+        unchanged: true,
+        updatedAt: new Date(existingRow.updated_at).toISOString(),
+      });
+    }
+
     if (!body.force) {
-      const { rows: existing } = await sql<{ updated_at: Date }>`
-        SELECT updated_at FROM event_cloud_snapshots
-        WHERE vendor_id = ${vendorId} AND event_sync_id = ${eventSyncId}::uuid
-        LIMIT 1
-      `;
-      const row = existing[0];
-      if (row && new Date(row.updated_at) > clientTime) {
+      if (existingRow && new Date(existingRow.updated_at) > clientTime) {
         return NextResponse.json(
           {
             error: "Conflict",
             code: "sync_conflict",
-            serverUpdatedAt: new Date(row.updated_at).toISOString(),
+            serverUpdatedAt: new Date(existingRow.updated_at).toISOString(),
           },
           { status: 409 }
         );
       }
     }
-
-    const payloadJson = JSON.stringify(body.payload);
 
     const { rows } = await sql<{ updated_at: Date }>`
       INSERT INTO event_cloud_snapshots

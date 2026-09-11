@@ -140,6 +140,9 @@ async function mergeImpl(
         lastName: sb.lastName,
         phone: sb.phone,
         email: sb.email,
+        mailingAddress: sb.mailingAddress,
+        resaleNumber: sb.resaleNumber,
+        masterSyncKey: sb.masterSyncKey,
         createdAt: parseDate(sb.createdAt),
         updatedAt: parseDate(sb.updatedAt),
       });
@@ -150,6 +153,9 @@ async function mergeImpl(
         lastName: sb.lastName,
         phone: sb.phone,
         email: sb.email,
+        mailingAddress: sb.mailingAddress,
+        resaleNumber: sb.resaleNumber,
+        masterSyncKey: sb.masterSyncKey,
         updatedAt: parseDate(sb.updatedAt),
       });
       summary.biddersUpdated++;
@@ -173,6 +179,7 @@ async function mergeImpl(
         mailingAddress: sc.mailingAddress,
         notes: sc.notes,
         commissionRate: sc.commissionRate,
+        masterSyncKey: sc.masterSyncKey,
         createdAt: parseDate(sc.createdAt),
         updatedAt: parseDate(sc.updatedAt),
       });
@@ -185,6 +192,7 @@ async function mergeImpl(
         mailingAddress: sc.mailingAddress,
         notes: sc.notes,
         commissionRate: sc.commissionRate,
+        masterSyncKey: sc.masterSyncKey,
         updatedAt: parseDate(sc.updatedAt),
       });
       summary.consignorsUpdated++;

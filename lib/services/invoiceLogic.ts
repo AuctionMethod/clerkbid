@@ -388,6 +388,8 @@ export function toInvoicePdfInput(
     paddleNumber: bidder.paddleNumber,
     phone: bidder.phone,
     email: bidder.email,
+    mailingAddress: bidder.mailingAddress,
+    resaleNumber: bidder.resaleNumber,
     status: invoice.status,
     paymentMethod: invoice.paymentMethod,
     paymentDate: invoice.paymentDate,

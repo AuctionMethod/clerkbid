@@ -69,6 +69,10 @@ export function UserDbProvider({ children }: { children: ReactNode }) {
       try {
         await migrateLegacyToUserDb(db);
         await ensureSettingsRow(db);
+        const { seedDirectoryFromEvents } = await import(
+          "@/lib/directory/seed"
+        );
+        await seedDirectoryFromEvents(db);
       } catch (e) {
         console.error(e);
       } finally {

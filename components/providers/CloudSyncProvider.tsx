@@ -40,6 +40,7 @@ import { handleAblyAnnounceMessage } from "@/lib/ably/handleClientAnnounce";
 import { isSyncOpsEnabled } from "@/lib/sync/syncOpsFlag";
 import Ably from "ably";
 import { ensureSettingsRow } from "@/lib/settings";
+import { syncDirectoryWithCloud } from "@/lib/directory/sync";
 
 /** Background pull uses this minimum gap between list fetches (see plan: ~30–60s). */
 const PULL_LIST_THROTTLE_MS = 45_000;
@@ -419,6 +420,9 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         }
       }
       await runPushAllSilent();
+      if (db) {
+        await syncDirectoryWithCloud(db);
+      }
     } finally {
       syncCycleLockRef.current = false;
     }

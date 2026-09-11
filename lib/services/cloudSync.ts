@@ -15,9 +15,9 @@ export type SyncListEntry = { eventSyncId: string; updatedAt: string };
 
 /**
  * True when the server snapshot is strictly newer than our local merge baseline.
- * Uses `lastCloudPullAt` when set (normal case). If we never pulled, uses
- * `lastCloudPushAt` so we do not replace local Dexie with an older server copy
- * right after adding rows (push is still debounced). If both are missing, false.
+ * Uses the later of `lastCloudPullAt` and `lastCloudPushAt` so a snapshot we
+ * just pushed is not treated as remote-newer (which would delete+reinsert rows).
+ * If both are missing, false.
  */
 export function isServerSnapshotNewerThanLocalBaseline(
   serverUpdatedAtIso: string,
@@ -26,13 +26,14 @@ export function isServerSnapshotNewerThanLocalBaseline(
 ): boolean {
   const serverMs = new Date(serverUpdatedAtIso).getTime();
   if (!Number.isFinite(serverMs)) return false;
-  if (localLastCloudPullAt != null) {
-    return serverMs > localLastCloudPullAt.getTime();
-  }
-  if (localLastCloudPushAt != null) {
-    return serverMs > localLastCloudPushAt.getTime();
-  }
-  return false;
+  const pullMs = localLastCloudPullAt?.getTime();
+  const pushMs = localLastCloudPushAt?.getTime();
+  const candidates = [pullMs, pushMs].filter(
+    (n): n is number => typeof n === "number" && Number.isFinite(n)
+  );
+  if (candidates.length === 0) return false;
+  const baseline = Math.max(...candidates);
+  return serverMs > baseline;
 }
 
 /**
@@ -366,7 +367,11 @@ export async function recordSuccessfulPush(
   const t = new Date(updatedAtIso);
   // Align row tip with server so hasUnpushedLocalEventMetadataEdits stays false after
   // push (avoids client clock ahead of server blocking snapshot refresh forever).
-  await db.events.update(eventId, { lastCloudPushAt: t, updatedAt: t });
+  await db.events.update(eventId, {
+    lastCloudPushAt: t,
+    lastCloudPullAt: t,
+    updatedAt: t,
+  });
   await ensureSettingsRow(db);
   await db.settings.update(1, { lastCloudPushAt: t });
 }
