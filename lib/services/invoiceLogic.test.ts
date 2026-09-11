@@ -3,6 +3,7 @@ import Dexie from "dexie";
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { AuctionDB, type AuctionEvent, type Invoice } from "@/lib/db";
 import {
+  attachUnallocatedSalesToUnpaidInvoice,
   computeInvoiceFromSubtotal,
   computeInvoiceTotalsFromParts,
   effectiveInvoiceBuyersPremiumRate,
@@ -287,5 +288,85 @@ describe("recalculateAndPersistInvoice", () => {
     expect(r.kind).toBe("unchanged");
     const after = await db.invoices.get(invoiceId);
     expect(after?.generatedAt.getTime()).toBe(before?.generatedAt.getTime());
+  });
+
+  it("attaches a new unallocated sale to the unpaid invoice and updates totals", async () => {
+    const lot2 = (await db.lots.add({
+      eventId,
+      baseLotNumber: 2,
+      lotSuffix: "",
+      displayLotNumber: "2",
+      description: "Lot 2",
+      quantity: 1,
+      status: "sold",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.sales.add({
+      eventId,
+      lotId: lot2,
+      bidderId,
+      displayLotNumber: "2",
+      paddleNumber: 4,
+      description: "Lot 2",
+      quantity: 1,
+      amount: 50,
+      clerkInitials: "DW",
+      createdAt: new Date(),
+    });
+    const event = await db.events.get(eventId);
+    const r = await attachUnallocatedSalesToUnpaidInvoice(db, event!, bidderId);
+    expect(r?.kind).toBe("updated");
+    const inv = await db.invoices.get(invoiceId);
+    expect(inv?.subtotal).toBe(150);
+    expect(inv?.total).toBe(181.5);
+    const pending = await db.sales
+      .where("eventId")
+      .equals(eventId)
+      .filter((s) => s.bidderId === bidderId && s.invoiceId == null)
+      .count();
+    expect(pending).toBe(0);
+  });
+
+  it("does not create an invoice when the bidder has no unpaid invoice yet", async () => {
+    const otherBidder = (await db.bidders.add({
+      eventId,
+      paddleNumber: 9,
+      firstName: "Z",
+      lastName: "Z",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    const lot3 = (await db.lots.add({
+      eventId,
+      baseLotNumber: 3,
+      lotSuffix: "",
+      displayLotNumber: "3",
+      description: "Lot 3",
+      quantity: 1,
+      status: "sold",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.sales.add({
+      eventId,
+      lotId: lot3,
+      bidderId: otherBidder,
+      displayLotNumber: "3",
+      paddleNumber: 9,
+      description: "Lot 3",
+      quantity: 1,
+      amount: 20,
+      clerkInitials: "DW",
+      createdAt: new Date(),
+    });
+    const event = await db.events.get(eventId);
+    const r = await attachUnallocatedSalesToUnpaidInvoice(
+      db,
+      event!,
+      otherBidder
+    );
+    expect(r).toBeNull();
+    expect(await db.invoices.where("eventId").equals(eventId).count()).toBe(1);
   });
 });
