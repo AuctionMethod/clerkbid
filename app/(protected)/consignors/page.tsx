@@ -24,6 +24,8 @@ import {
 import type { Consignor } from "@/lib/db";
 import { mutateWithParentEventTouch } from "@/lib/db/mutateWithParentEventTouch";
 import { flushSingleEventToCloudSnapshot } from "@/lib/services/cloudSync";
+import { findOrCreateMasterConsignor } from "@/lib/directory/upsert";
+import { pushDirectoryToCloud } from "@/lib/directory/sync";
 
 const linkSecondary =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-navy/15 bg-surface px-4 py-2 text-sm font-medium text-ink transition hover:border-navy/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:border-slate-500 dark:focus-visible:ring-offset-slate-950";
@@ -37,6 +39,7 @@ export default function ConsignorsPage() {
   const [search, setSearch] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Consignor | null>(null);
+  const [startWithLookup, setStartWithLookup] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Consignor | null>(null);
 
   const rows = useConsignorsForEvent(currentEventId ?? undefined);
@@ -144,6 +147,15 @@ export default function ConsignorsPage() {
                         if (r.commissionPct != null) {
                           row.commissionRate = r.commissionPct / 100;
                         }
+                        const master = await findOrCreateMasterConsignor(db, {
+                          name: row.name,
+                          email: row.email,
+                          phone: row.phone,
+                          mailingAddress: row.mailingAddress,
+                          notes: row.notes,
+                          commissionRate: row.commissionRate,
+                        }, now);
+                        row.masterSyncKey = master.syncKey;
                         await db.consignors.add(row);
                       }
                     }
@@ -164,7 +176,14 @@ export default function ConsignorsPage() {
                     kind: ok ? "success" : toAdd.length > 0 ? "info" : "error",
                     message: parts.join(" ") || "Nothing imported.",
                   });
-                  if (toAdd.length > 0) scheduleCloudPush();
+                  if (toAdd.length > 0) {
+                    scheduleCloudPush();
+                    try {
+                      await pushDirectoryToCloud(db);
+                    } catch {
+                      /* background */
+                    }
+                  }
                 } catch (err) {
                   showToast({
                     kind: "error",
@@ -210,8 +229,20 @@ export default function ConsignorsPage() {
             </Button>
             <Button
               type="button"
+              variant="secondary"
               onClick={() => {
                 setEditing(null);
+                setStartWithLookup(true);
+                setFormOpen(true);
+              }}
+            >
+              Lookup
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setEditing(null);
+                setStartWithLookup(false);
                 setFormOpen(true);
               }}
             >
@@ -243,6 +274,7 @@ export default function ConsignorsPage() {
           defaultCommissionPct={defaultCommissionPct}
           onEdit={(c) => {
             setEditing(c);
+            setStartWithLookup(false);
             setFormOpen(true);
           }}
           onDelete={(c) => setDeleteTarget(c)}
@@ -254,11 +286,22 @@ export default function ConsignorsPage() {
         open={formOpen}
         eventId={currentEventId}
         editing={editing}
+        startWithLookup={startWithLookup}
         onClose={() => {
           setFormOpen(false);
           setEditing(null);
+          setStartWithLookup(false);
         }}
         onSaved={() => showToast({ kind: "success", message: "Consignor saved." })}
+        onSwitchToExisting={(c) => {
+          setEditing(c);
+          setStartWithLookup(false);
+          setFormOpen(true);
+          showToast({
+            kind: "info",
+            message: "That consignor is already on this event.",
+          });
+        }}
       />
 
       <ConfirmDialog

@@ -30,7 +30,10 @@ import { PassOutCheckbox } from "./PassOutCheckbox";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useCloudSync } from "@/components/providers/CloudSyncProvider";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
-import { roundMoney } from "@/lib/services/invoiceLogic";
+import {
+  attachUnallocatedSalesToUnpaidInvoice,
+  roundMoney,
+} from "@/lib/services/invoiceLogic";
 import { mutateWithEventTables } from "@/lib/db/mutateWithParentEventTouch";
 import { newEntitySyncKey } from "@/lib/utils/clientSyncKey";
 import { enqueueSalePut } from "@/lib/sync/ops/enqueueOps";
@@ -643,6 +646,13 @@ export function SaleForm({
     }
 
     const evCloud = await db.events.get(eventId);
+    if (evCloud) {
+      try {
+        await attachUnallocatedSalesToUnpaidInvoice(db, evCloud, bidderId);
+      } catch {
+        /* sale is recorded; invoice can be generated from /invoices */
+      }
+    }
     if (evCloud?.syncId) {
       const s = await db.sales.get(recordedSaleId);
       if (s) await enqueueSalePut(db, evCloud.syncId, s);
