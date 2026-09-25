@@ -295,7 +295,9 @@ export async function consolidateMasterBiddersByEmail(
   }
 
   let removed = 0;
-  for (const [, group] of byEmail) {
+  const bidderGroups = Array.from(byEmail.values());
+  for (let i = 0; i < bidderGroups.length; i++) {
+    const group = bidderGroups[i]!;
     if (group.length < 2) continue;
     group.sort((a, b) => {
       const byUpdated = safeMs(b.updatedAt) - safeMs(a.updatedAt);
@@ -304,7 +306,8 @@ export async function consolidateMasterBiddersByEmail(
     });
     const winner = group[0]!;
     const losers = group.slice(1);
-    for (const loser of losers) {
+    for (let j = 0; j < losers.length; j++) {
+      const loser = losers[j]!;
       await repointBidderMasterLinks(db, loser.syncKey, winner.syncKey);
       if (loser.id != null) {
         await db.masterBidders.delete(loser.id);
@@ -329,7 +332,9 @@ export async function consolidateMasterConsignorsByEmail(
   }
 
   let removed = 0;
-  for (const [, group] of byEmail) {
+  const consignorGroups = Array.from(byEmail.values());
+  for (let i = 0; i < consignorGroups.length; i++) {
+    const group = consignorGroups[i]!;
     if (group.length < 2) continue;
     group.sort((a, b) => {
       const byUpdated = safeMs(b.updatedAt) - safeMs(a.updatedAt);
@@ -338,7 +343,8 @@ export async function consolidateMasterConsignorsByEmail(
     });
     const winner = group[0]!;
     const losers = group.slice(1);
-    for (const loser of losers) {
+    for (let j = 0; j < losers.length; j++) {
+      const loser = losers[j]!;
       await repointConsignorMasterLinks(db, loser.syncKey, winner.syncKey);
       if (loser.id != null) {
         await db.masterConsignors.delete(loser.id);
