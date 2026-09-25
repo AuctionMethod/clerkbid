@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import type { Bidder, MasterBidder } from "@/lib/db";
 import { useUserDb } from "@/components/providers/UserDbProvider";
@@ -18,9 +18,7 @@ import { searchMasterBidders } from "@/lib/directory/search";
 import { optTrim } from "@/lib/directory/match";
 import {
   findEventBidderByMaster,
-  findOrCreateMasterBidder,
-  masterBidderFieldsDiffer,
-  updateMasterBidderFromEvent,
+  upsertMasterBidder,
 } from "@/lib/directory/upsert";
 import {
   eventRosterNumberTakenByAnother,
@@ -62,7 +60,6 @@ export function BidderForm({
   const [paddleReady, setPaddleReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [lookupOpen, setLookupOpen] = useState(false);
-  const [updatingMaster, setUpdatingMaster] = useState(false);
   const submittingRef = useRef(false);
 
   const masters =
@@ -78,11 +75,6 @@ export function BidderForm({
         ),
       [db]
     ) ?? EMPTY_MASTERS;
-
-  const linkedMaster = useMemo(
-    () => masters.find((m) => m.syncKey === masterSyncKey),
-    [masters, masterSyncKey]
-  );
 
   useEffect(() => {
     if (!open) return;
@@ -130,11 +122,6 @@ export function BidderForm({
     };
   }
 
-  const canUpdateMaster =
-    Boolean(masterSyncKey) &&
-    linkedMaster != null &&
-    masterBidderFieldsDiffer(linkedMaster, currentFields());
-
   async function applyLookup(master: MasterBidder) {
     if (!db) return;
     const existing = await findEventBidderByMaster(db, eventId, master.syncKey);
@@ -152,28 +139,6 @@ export function BidderForm({
     setResaleNumber(master.resaleNumber ?? "");
     setMasterSyncKey(master.syncKey);
     setLookupOpen(false);
-  }
-
-  async function handleUpdateMaster() {
-    if (!db || !masterSyncKey) return;
-    setUpdatingMaster(true);
-    setError(null);
-    try {
-      const ok = await updateMasterBidderFromEvent(
-        db,
-        masterSyncKey,
-        currentFields()
-      );
-      if (!ok) {
-        setError("Could not find the master record to update.");
-        return;
-      }
-      await pushDirectoryToCloud(db);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not update master record.");
-    } finally {
-      setUpdatingMaster(false);
-    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -218,11 +183,12 @@ export function BidderForm({
         }
       }
       const now = new Date();
-      let linkKey = masterSyncKey;
-      if (!linkKey) {
-        const master = await findOrCreateMasterBidder(db, fields, now);
-        linkKey = master.syncKey;
-      }
+      const master = await upsertMasterBidder(db, fields, {
+        preferredSyncKey: masterSyncKey,
+        now,
+      });
+      const linkKey = master.syncKey;
+      setMasterSyncKey(linkKey);
       try {
         await mutateWithParentEventTouch(db, eventId, "bidders", async () => {
           if (editing) {
@@ -319,16 +285,6 @@ export function BidderForm({
             >
               Cancel
             </Button>
-            {canUpdateMaster ? (
-              <Button
-                variant="secondary"
-                type="button"
-                onClick={() => void handleUpdateMaster()}
-                disabled={submitting || updatingMaster}
-              >
-                {updatingMaster ? "Updating…" : "Update master record"}
-              </Button>
-            ) : null}
             <Button
               type="submit"
               form="bidder-form"

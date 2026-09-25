@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import type { Consignor, MasterConsignor } from "@/lib/db";
 import { useUserDb } from "@/components/providers/UserDbProvider";
@@ -16,9 +16,7 @@ import { searchMasterConsignors } from "@/lib/directory/search";
 import { optTrim } from "@/lib/directory/match";
 import {
   findEventConsignorByMaster,
-  findOrCreateMasterConsignor,
-  masterConsignorFieldsDiffer,
-  updateMasterConsignorFromEvent,
+  upsertMasterConsignor,
 } from "@/lib/directory/upsert";
 import { pushDirectoryToCloud } from "@/lib/directory/sync";
 import {
@@ -59,7 +57,6 @@ export function ConsignorForm({
   const [masterSyncKey, setMasterSyncKey] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [lookupOpen, setLookupOpen] = useState(false);
-  const [updatingMaster, setUpdatingMaster] = useState(false);
 
   const masters =
     useLiveQuery(
@@ -74,11 +71,6 @@ export function ConsignorForm({
         ),
       [db]
     ) ?? EMPTY_MASTERS;
-
-  const linkedMaster = useMemo(
-    () => masters.find((m) => m.syncKey === masterSyncKey),
-    [masters, masterSyncKey]
-  );
 
   useEffect(() => {
     if (!open) return;
@@ -139,12 +131,6 @@ export function ConsignorForm({
     };
   }
 
-  const canUpdateMaster =
-    Boolean(masterSyncKey) &&
-    linkedMaster != null &&
-    parsedCommission().ok &&
-    masterConsignorFieldsDiffer(linkedMaster, currentFields());
-
   async function applyLookup(master: MasterConsignor) {
     if (!db) return;
     const existing = await findEventConsignorByMaster(db, eventId, master.syncKey);
@@ -166,35 +152,6 @@ export function ConsignorForm({
     );
     setMasterSyncKey(master.syncKey);
     setLookupOpen(false);
-  }
-
-  async function handleUpdateMaster() {
-    if (!db || !masterSyncKey) return;
-    const commission = parsedCommission();
-    if (!commission.ok) {
-      setError(commission.message);
-      return;
-    }
-    setUpdatingMaster(true);
-    setError(null);
-    try {
-      const ok = await updateMasterConsignorFromEvent(
-        db,
-        masterSyncKey,
-        currentFields()
-      );
-      if (!ok) {
-        setError("Could not find the master record to update.");
-        return;
-      }
-      await pushDirectoryToCloud(db);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Could not update master record."
-      );
-    } finally {
-      setUpdatingMaster(false);
-    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -243,11 +200,12 @@ export function ConsignorForm({
     const commissionRate = commission.value;
     const now = new Date();
     const fields = currentFields();
-    let linkKey = masterSyncKey;
-    if (!linkKey) {
-      const master = await findOrCreateMasterConsignor(db, fields, now);
-      linkKey = master.syncKey;
-    }
+    const master = await upsertMasterConsignor(db, fields, {
+      preferredSyncKey: masterSyncKey,
+      now,
+    });
+    const linkKey = master.syncKey;
+    setMasterSyncKey(linkKey);
 
     if (editing) {
       let existing =
@@ -322,16 +280,6 @@ export function ConsignorForm({
             <Button variant="secondary" type="button" onClick={onClose}>
               Cancel
             </Button>
-            {canUpdateMaster ? (
-              <Button
-                variant="secondary"
-                type="button"
-                onClick={() => void handleUpdateMaster()}
-                disabled={updatingMaster}
-              >
-                {updatingMaster ? "Updating…" : "Update master record"}
-              </Button>
-            ) : null}
             <Button type="submit" form="consignor-form" variant="primary">
               Save
             </Button>

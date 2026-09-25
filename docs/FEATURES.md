@@ -58,7 +58,7 @@ This document summarizes product-facing capabilities of **ClerkBid** (auction cl
 
 - **Master lists** — Organization-wide **master bidders** and **master consignors** (search, filter, CSV export), stored locally and synced as a vendor-level cloud snapshot (separate from per-event backups).
 - **Lookup to register** — From an event’s Bidders or Consignors page, **Lookup** finds an existing person by name, email, or last 4 digits of phone, then assigns a paddle or consignor number for that auction.
-- **Copy, not live-link for edits** — Registering copies details onto the event row and stores a link. Event-local edits do not change the master list unless the user chooses **Update master record**.
+- **Email-unique master, updated on save** — Registering links to a Directory row matched by email (else phone). Saving event bidder/consignor details updates that Directory entry instead of creating a duplicate.
 - **Seed** — Existing event registries are copied into Directory once per profile (match email, else phone; name-only rows stay separate).
 
 ## Bidders

@@ -3,6 +3,9 @@ import {
   parseDirectoryDate,
   type DirectoryExportPayload,
 } from "@/lib/directory/payload";
+import { consolidateDirectoryDuplicates } from "@/lib/directory/upsert";
+import { normalizeEmail } from "@/lib/directory/match";
+import { withCloudSyncApply } from "@/lib/db/syncApplyGuard";
 
 function safeMs(d: Date | string | number | undefined | null): number {
   const parsed = d instanceof Date ? d : d != null ? new Date(d) : null;
@@ -18,8 +21,10 @@ export type DirectoryMergeSummary = {
 };
 
 /**
- * Merge a vendor directory snapshot into local Dexie by `syncKey`.
- * Last-write-wins per record (`updatedAt`). Local-only rows are kept.
+ * Merge a vendor directory snapshot into local Dexie by `syncKey`,
+ * preferring email uniqueness when a remote row shares an email with a
+ * local row that has a different syncKey. Last-write-wins per record.
+ * Local-only rows are kept, then email duplicates are consolidated.
  */
 export async function mergeDirectorySnapshot(
   db: AuctionDB,
@@ -35,11 +40,20 @@ export async function mergeDirectorySnapshot(
   await db.transaction("rw", [db.masterBidders, db.masterConsignors], async () => {
     const localBidders = await db.masterBidders.toArray();
     const bidderByKey = new Map<string, MasterBidder>();
-    for (const b of localBidders) bidderByKey.set(b.syncKey, b);
+    const bidderByEmail = new Map<string, MasterBidder>();
+    for (const b of localBidders) {
+      bidderByKey.set(b.syncKey, b);
+      const e = normalizeEmail(b.email);
+      if (e && !bidderByEmail.has(e)) bidderByEmail.set(e, b);
+    }
 
     for (const rb of remote.bidders) {
-      const local = bidderByKey.get(rb.syncKey);
       const remoteUpdated = parseDirectoryDate(rb.updatedAt);
+      const remoteEmail = normalizeEmail(rb.email);
+      const local =
+        bidderByKey.get(rb.syncKey) ??
+        (remoteEmail ? bidderByEmail.get(remoteEmail) : undefined);
+
       if (!local) {
         await db.masterBidders.add({
           syncKey: rb.syncKey,
@@ -69,11 +83,20 @@ export async function mergeDirectorySnapshot(
 
     const localConsignors = await db.masterConsignors.toArray();
     const consignorByKey = new Map<string, MasterConsignor>();
-    for (const c of localConsignors) consignorByKey.set(c.syncKey, c);
+    const consignorByEmail = new Map<string, MasterConsignor>();
+    for (const c of localConsignors) {
+      consignorByKey.set(c.syncKey, c);
+      const e = normalizeEmail(c.email);
+      if (e && !consignorByEmail.has(e)) consignorByEmail.set(e, c);
+    }
 
     for (const rc of remote.consignors) {
-      const local = consignorByKey.get(rc.syncKey);
       const remoteUpdated = parseDirectoryDate(rc.updatedAt);
+      const remoteEmail = normalizeEmail(rc.email);
+      const local =
+        consignorByKey.get(rc.syncKey) ??
+        (remoteEmail ? consignorByEmail.get(remoteEmail) : undefined);
+
       if (!local) {
         await db.masterConsignors.add({
           syncKey: rc.syncKey,
@@ -100,6 +123,10 @@ export async function mergeDirectorySnapshot(
         summary.consignorsUpdated++;
       }
     }
+  });
+
+  await withCloudSyncApply(async () => {
+    await consolidateDirectoryDuplicates(db);
   });
 
   return summary;

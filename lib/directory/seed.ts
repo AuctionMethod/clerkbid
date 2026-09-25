@@ -2,6 +2,7 @@ import type { AuctionDB } from "@/lib/db";
 import { ensureSettingsRow } from "@/lib/settings";
 import { withCloudSyncApply } from "@/lib/db/syncApplyGuard";
 import {
+  consolidateDirectoryDuplicates,
   findEventBidderByMaster,
   findEventConsignorByMaster,
   findOrCreateMasterBidder,
@@ -12,11 +13,17 @@ import {
  * One-time: build master lists from existing event bidders/consignors.
  * Matches email, else phone digits; does not merge name-only duplicates.
  * Event rows get `masterSyncKey` without bumping event `updatedAt` (sync apply guard).
+ * Also consolidates any existing email duplicates (including from prior sync).
  */
 export async function seedDirectoryFromEvents(db: AuctionDB): Promise<void> {
   await ensureSettingsRow(db);
   const settings = await db.settings.get(1);
-  if (settings?.directorySeededAt) return;
+  if (settings?.directorySeededAt) {
+    await withCloudSyncApply(async () => {
+      await consolidateDirectoryDuplicates(db);
+    });
+    return;
+  }
 
   await withCloudSyncApply(async () => {
     const bidders = await db.bidders.toArray();
@@ -64,6 +71,8 @@ export async function seedDirectoryFromEvents(db: AuctionDB): Promise<void> {
         }
       }
     }
+
+    await consolidateDirectoryDuplicates(db);
   });
 
   await db.settings.update(1, { directorySeededAt: new Date() });

@@ -7,7 +7,10 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { optTrim } from "@/lib/directory/match";
-import { newEntitySyncKey } from "@/lib/utils/clientSyncKey";
+import {
+  consolidateMasterBiddersByEmail,
+  upsertMasterBidder,
+} from "@/lib/directory/upsert";
 import { pushDirectoryToCloud } from "@/lib/directory/sync";
 
 export function MasterBidderForm({
@@ -54,30 +57,19 @@ export function MasterBidderForm({
     setSaving(true);
     setError(null);
     try {
-      const now = new Date();
-      if (editing?.id != null) {
-        await db.masterBidders.update(editing.id, {
+      await upsertMasterBidder(
+        db,
+        {
           firstName: fn,
           lastName: ln,
           phone: optTrim(phone),
           email: optTrim(email),
           mailingAddress: optTrim(mailingAddress),
           resaleNumber: optTrim(resaleNumber),
-          updatedAt: now,
-        });
-      } else {
-        await db.masterBidders.add({
-          syncKey: newEntitySyncKey(),
-          firstName: fn,
-          lastName: ln,
-          phone: optTrim(phone),
-          email: optTrim(email),
-          mailingAddress: optTrim(mailingAddress),
-          resaleNumber: optTrim(resaleNumber),
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
+        },
+        { preferredSyncKey: editing?.syncKey }
+      );
+      await consolidateMasterBiddersByEmail(db);
       try {
         await pushDirectoryToCloud(db);
       } catch {

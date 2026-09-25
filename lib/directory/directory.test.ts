@@ -4,7 +4,11 @@ import Dexie from "dexie";
 import { AuctionDB } from "@/lib/db";
 import { seedDirectoryFromEvents } from "@/lib/directory/seed";
 import { mergeDirectorySnapshot } from "@/lib/directory/merge";
-import { findOrCreateMasterBidder } from "@/lib/directory/upsert";
+import {
+  consolidateMasterBiddersByEmail,
+  findOrCreateMasterBidder,
+  upsertMasterBidder,
+} from "@/lib/directory/upsert";
 import { ensureSettingsRow } from "@/lib/settings";
 import { DIRECTORY_EXPORT_VERSION } from "@/lib/directory/payload";
 
@@ -121,6 +125,142 @@ describe("directory seed and upsert", () => {
     expect(b.syncKey).toBe(a.syncKey);
     expect(await db.masterBidders.count()).toBe(1);
   });
+
+  it("upsert updates existing master fields instead of creating a duplicate", async () => {
+    const a = await upsertMasterBidder(db, {
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      phone: "555-111-2222",
+      mailingAddress: "1 Old St",
+    });
+    const b = await upsertMasterBidder(
+      db,
+      {
+        firstName: "Jane",
+        lastName: "Doe",
+        email: "jane@x.com",
+        phone: "555-999-8888",
+        mailingAddress: "2 New Ave",
+      },
+      { preferredSyncKey: a.syncKey }
+    );
+    expect(b.syncKey).toBe(a.syncKey);
+    expect(await db.masterBidders.count()).toBe(1);
+    const row = await db.masterBidders.get(a.id!);
+    expect(row?.phone).toBe("555-999-8888");
+    expect(row?.mailingAddress).toBe("2 New Ave");
+  });
+
+  it("upsert by email merges preferredSyncKey into the email-canonical row", async () => {
+    const byEmail = await upsertMasterBidder(db, {
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      mailingAddress: "1 Old St",
+    });
+    const other = await upsertMasterBidder(db, {
+      firstName: "Jane",
+      lastName: "Doe",
+      phone: "555-111-2222",
+      mailingAddress: "orphan",
+    });
+    expect(await db.masterBidders.count()).toBe(2);
+
+    const eventId = (await db.events.add({
+      name: "A",
+      organizationName: "Org",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "aaaaaaaa-bbbb-1ccc-8ddd-eeeeeeeeeeee",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.bidders.add({
+      eventId,
+      paddleNumber: 1,
+      firstName: "Jane",
+      lastName: "Doe",
+      phone: "555-111-2222",
+      masterSyncKey: other.syncKey,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const merged = await upsertMasterBidder(
+      db,
+      {
+        firstName: "Jane",
+        lastName: "Doe",
+        email: "jane@x.com",
+        phone: "555-999-0000",
+        mailingAddress: "2 New Ave",
+      },
+      { preferredSyncKey: other.syncKey }
+    );
+
+    expect(merged.syncKey).toBe(byEmail.syncKey);
+    expect(await db.masterBidders.count()).toBe(1);
+    const linked = await db.bidders.toArray();
+    expect(linked[0]?.masterSyncKey).toBe(byEmail.syncKey);
+    const row = await db.masterBidders.where("syncKey").equals(byEmail.syncKey).first();
+    expect(row?.mailingAddress).toBe("2 New Ave");
+    expect(row?.phone).toBe("555-999-0000");
+  });
+
+  it("consolidateMasterBiddersByEmail removes email duplicates and re-points links", async () => {
+    const older = await db.masterBidders.add({
+      syncKey: "old-key",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      mailingAddress: "Old",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await db.masterBidders.add({
+      syncKey: "new-key",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "Jane@x.com",
+      mailingAddress: "New",
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+    const eventId = (await db.events.add({
+      name: "A",
+      organizationName: "Org",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "aaaaaaaa-bbbb-1ccc-8ddd-eeeeeeeeeeee",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.bidders.add({
+      eventId,
+      paddleNumber: 1,
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      masterSyncKey: "old-key",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await consolidateMasterBiddersByEmail(db);
+    expect(result.removed).toBe(1);
+    expect(await db.masterBidders.count()).toBe(1);
+    const remaining = await db.masterBidders.toArray();
+    expect(remaining[0]?.syncKey).toBe("new-key");
+    expect(remaining[0]?.mailingAddress).toBe("New");
+    expect(await db.masterBidders.get(older as number)).toBeUndefined();
+    const linked = await db.bidders.toArray();
+    expect(linked[0]?.masterSyncKey).toBe("new-key");
+  });
 });
 
 describe("mergeDirectorySnapshot", () => {
@@ -157,5 +297,39 @@ describe("mergeDirectorySnapshot", () => {
     expect(summary.biddersUpdated).toBe(1);
     const same = await db.masterBidders.where("syncKey").equals("same").first();
     expect(same?.firstName).toBe("New");
+  });
+
+  it("merges remote bidder onto local email match instead of duplicating", async () => {
+    await db.masterBidders.add({
+      syncKey: "local-key",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane@x.com",
+      mailingAddress: "Local",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const summary = await mergeDirectorySnapshot(db, {
+      exportVersion: DIRECTORY_EXPORT_VERSION,
+      exportDate: "2026-03-01T00:00:00.000Z",
+      bidders: [
+        {
+          syncKey: "remote-key",
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@x.com",
+          mailingAddress: "Remote",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        },
+      ],
+      consignors: [],
+    });
+    expect(summary.biddersAdded).toBe(0);
+    expect(summary.biddersUpdated).toBe(1);
+    expect(await db.masterBidders.count()).toBe(1);
+    const row = await db.masterBidders.toArray();
+    expect(row[0]?.syncKey).toBe("local-key");
+    expect(row[0]?.mailingAddress).toBe("Remote");
   });
 });

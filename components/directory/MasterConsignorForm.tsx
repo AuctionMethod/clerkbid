@@ -7,7 +7,10 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { optTrim } from "@/lib/directory/match";
-import { newEntitySyncKey } from "@/lib/utils/clientSyncKey";
+import {
+  consolidateMasterConsignorsByEmail,
+  upsertMasterConsignor,
+} from "@/lib/directory/upsert";
 import { pushDirectoryToCloud } from "@/lib/directory/sync";
 
 export function MasterConsignorForm({
@@ -67,30 +70,19 @@ export function MasterConsignorForm({
     setSaving(true);
     setError(null);
     try {
-      const now = new Date();
-      if (editing?.id != null) {
-        await db.masterConsignors.update(editing.id, {
+      await upsertMasterConsignor(
+        db,
+        {
           name: nm,
           phone: optTrim(phone),
           email: optTrim(email),
           mailingAddress: optTrim(mailingAddress),
           notes: optTrim(notes),
           commissionRate,
-          updatedAt: now,
-        });
-      } else {
-        await db.masterConsignors.add({
-          syncKey: newEntitySyncKey(),
-          name: nm,
-          phone: optTrim(phone),
-          email: optTrim(email),
-          mailingAddress: optTrim(mailingAddress),
-          notes: optTrim(notes),
-          commissionRate,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
+        },
+        { preferredSyncKey: editing?.syncKey }
+      );
+      await consolidateMasterConsignorsByEmail(db);
       try {
         await pushDirectoryToCloud(db);
       } catch {
