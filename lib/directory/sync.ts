@@ -6,6 +6,8 @@ import {
   type DirectoryExportPayload,
 } from "@/lib/directory/payload";
 import { mergeDirectorySnapshot } from "@/lib/directory/merge";
+import { consolidateDirectoryDuplicates } from "@/lib/directory/upsert";
+import { withCloudSyncApply } from "@/lib/db/syncApplyGuard";
 
 function isNewer(serverIso: string, local?: Date): boolean {
   const serverMs = new Date(serverIso).getTime();
@@ -90,11 +92,42 @@ export async function pushDirectoryToCloud(db: AuctionDB): Promise<boolean> {
   return true;
 }
 
+/**
+ * Collapse email/phone duplicate master rows and push the cleaned Directory
+ * to cloud when anything was removed (so sync does not resurrect them).
+ */
+export async function cleanupDirectoryDuplicates(
+  db: AuctionDB
+): Promise<{
+  biddersRemoved: number;
+  consignorsRemoved: number;
+  pushed: boolean;
+}> {
+  const result = await withCloudSyncApply(async () =>
+    consolidateDirectoryDuplicates(db)
+  );
+  let pushed = false;
+  if (result.biddersRemoved > 0 || result.consignorsRemoved > 0) {
+    try {
+      pushed = await pushDirectoryToCloud(db);
+    } catch {
+      pushed = false;
+    }
+  }
+  return { ...result, pushed };
+}
+
 export async function syncDirectoryWithCloud(db: AuctionDB): Promise<void> {
   try {
     await pullDirectoryFromCloud(db);
   } catch {
     /* network */
+  }
+  try {
+    // Always collapse local dupes after pull (and push if we removed any).
+    await cleanupDirectoryDuplicates(db);
+  } catch {
+    /* ignore */
   }
   try {
     await pushDirectoryToCloud(db);

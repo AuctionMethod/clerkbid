@@ -19,9 +19,7 @@ export async function seedDirectoryFromEvents(db: AuctionDB): Promise<void> {
   await ensureSettingsRow(db);
   const settings = await db.settings.get(1);
   if (settings?.directorySeededAt) {
-    await withCloudSyncApply(async () => {
-      await consolidateDirectoryDuplicates(db);
-    });
+    // Deduping + cloud push happens via cleanupDirectoryDuplicates after seed.
     return;
   }
 

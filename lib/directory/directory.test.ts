@@ -261,6 +261,58 @@ describe("directory seed and upsert", () => {
     const linked = await db.bidders.toArray();
     expect(linked[0]?.masterSyncKey).toBe("new-key");
   });
+
+  it("consolidates phone duplicates when emails do not conflict", async () => {
+    await db.masterBidders.add({
+      syncKey: "a",
+      firstName: "Jane",
+      lastName: "Doe",
+      phone: "(555) 111-2222",
+      mailingAddress: "Old",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await db.masterBidders.add({
+      syncKey: "b",
+      firstName: "Jane",
+      lastName: "Doe",
+      phone: "5551112222",
+      email: "jane@x.com",
+      mailingAddress: "New",
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+    const result = await consolidateMasterBiddersByEmail(db);
+    expect(result.removed).toBe(1);
+    expect(await db.masterBidders.count()).toBe(1);
+    const row = await db.masterBidders.toArray();
+    expect(row[0]?.email).toBe("jane@x.com");
+    expect(row[0]?.mailingAddress).toBe("New");
+  });
+
+  it("does not merge same phone when emails differ", async () => {
+    await db.masterBidders.add({
+      syncKey: "a",
+      firstName: "A",
+      lastName: "One",
+      phone: "5551112222",
+      email: "a@x.com",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.masterBidders.add({
+      syncKey: "b",
+      firstName: "B",
+      lastName: "Two",
+      phone: "5551112222",
+      email: "b@x.com",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const result = await consolidateMasterBiddersByEmail(db);
+    expect(result.removed).toBe(0);
+    expect(await db.masterBidders.count()).toBe(2);
+  });
 });
 
 describe("mergeDirectorySnapshot", () => {

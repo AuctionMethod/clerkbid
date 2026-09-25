@@ -279,80 +279,238 @@ export async function updateMasterConsignorFromEvent(
 
 /**
  * Collapse master bidders that share the same normalized email into one row.
- * Keeps the newest `updatedAt`, re-points event links, deletes the rest.
+ * Also merges rows that share a phone (7+ digits) when emails do not conflict
+ * (same email, or one/both missing). Keeps the newest `updatedAt`, fills blank
+ * fields from losers, re-points event links, deletes the rest.
  */
 export async function consolidateMasterBiddersByEmail(
   db: AuctionDB
 ): Promise<{ removed: number }> {
-  const all = await db.masterBidders.toArray();
+  let removed = 0;
+  removed += await consolidateBidderGroups(db, groupMasterBiddersByEmail);
+  removed += await consolidateBidderGroups(db, groupMasterBiddersByPhone);
+  return { removed };
+}
+
+function groupMasterBiddersByEmail(
+  all: MasterBidder[]
+): MasterBidder[][] {
   const byEmail = new Map<string, MasterBidder[]>();
-  for (const m of all) {
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i]!;
     const e = normalizeEmail(m.email);
     if (!e) continue;
     const list = byEmail.get(e) ?? [];
     list.push(m);
     byEmail.set(e, list);
   }
+  return Array.from(byEmail.values()).filter((g) => g.length >= 2);
+}
 
+function emailsCompatible(
+  a: string | undefined,
+  b: string | undefined
+): boolean {
+  const na = normalizeEmail(a);
+  const nb = normalizeEmail(b);
+  if (!na || !nb) return true;
+  return na === nb;
+}
+
+function groupMasterBiddersByPhone(
+  all: MasterBidder[]
+): MasterBidder[][] {
+  const byPhone = new Map<string, MasterBidder[]>();
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i]!;
+    const phone = digitsOnly(m.phone);
+    if (phone.length < 7) continue;
+    const list = byPhone.get(phone) ?? [];
+    list.push(m);
+    byPhone.set(phone, list);
+  }
+  const groups = Array.from(byPhone.values()).filter((g) => g.length >= 2);
+  const out: MasterBidder[][] = [];
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i]!;
+    let compatible = true;
+    for (let j = 0; j < group.length && compatible; j++) {
+      for (let k = j + 1; k < group.length; k++) {
+        if (!emailsCompatible(group[j]!.email, group[k]!.email)) {
+          compatible = false;
+          break;
+        }
+      }
+    }
+    if (compatible) out.push(group);
+  }
+  return out;
+}
+
+function sortMastersNewestFirst<T extends { updatedAt: Date; createdAt: Date }>(
+  group: T[]
+): T[] {
+  return group.slice().sort((a, b) => {
+    const byUpdated = safeMs(b.updatedAt) - safeMs(a.updatedAt);
+    if (byUpdated !== 0) return byUpdated;
+    return safeMs(a.createdAt) - safeMs(b.createdAt);
+  });
+}
+
+function pickBidderField(
+  winner: MasterBidder,
+  losers: MasterBidder[],
+  key: "phone" | "email" | "mailingAddress" | "resaleNumber"
+): string | undefined {
+  const own = optTrim(winner[key]);
+  if (own) return own;
+  for (let i = 0; i < losers.length; i++) {
+    const v = optTrim(losers[i]![key]);
+    if (v) return v;
+  }
+  return undefined;
+}
+
+async function consolidateBidderGroups(
+  db: AuctionDB,
+  groupFn: (all: MasterBidder[]) => MasterBidder[][]
+): Promise<number> {
+  const all = await db.masterBidders.toArray();
+  const groups = groupFn(all);
   let removed = 0;
-  const bidderGroups = Array.from(byEmail.values());
-  for (let i = 0; i < bidderGroups.length; i++) {
-    const group = bidderGroups[i]!;
-    if (group.length < 2) continue;
-    group.sort((a, b) => {
-      const byUpdated = safeMs(b.updatedAt) - safeMs(a.updatedAt);
-      if (byUpdated !== 0) return byUpdated;
-      return safeMs(a.createdAt) - safeMs(b.createdAt);
-    });
-    const winner = group[0]!;
-    const losers = group.slice(1);
+  for (let i = 0; i < groups.length; i++) {
+    const sorted = sortMastersNewestFirst(groups[i]!);
+    const winner = sorted[0]!;
+    const losers = sorted.slice(1);
+    const patch: Partial<MasterBidder> = {
+      phone: pickBidderField(winner, losers, "phone"),
+      email: pickBidderField(winner, losers, "email"),
+      mailingAddress: pickBidderField(winner, losers, "mailingAddress"),
+      resaleNumber: pickBidderField(winner, losers, "resaleNumber"),
+    };
+    if (winner.id != null) {
+      await db.masterBidders.update(winner.id, patch);
+    }
     for (let j = 0; j < losers.length; j++) {
       const loser = losers[j]!;
       await repointBidderMasterLinks(db, loser.syncKey, winner.syncKey);
-      if (loser.id != null) {
-        await db.masterBidders.delete(loser.id);
-        removed++;
-      }
+      const deleted = await db.masterBidders
+        .where("syncKey")
+        .equals(loser.syncKey)
+        .delete();
+      removed += deleted;
     }
   }
-  return { removed };
+  return removed;
 }
 
 export async function consolidateMasterConsignorsByEmail(
   db: AuctionDB
 ): Promise<{ removed: number }> {
-  const all = await db.masterConsignors.toArray();
+  let removed = 0;
+  removed += await consolidateConsignorGroups(db, groupMasterConsignorsByEmail);
+  removed += await consolidateConsignorGroups(db, groupMasterConsignorsByPhone);
+  return { removed };
+}
+
+function groupMasterConsignorsByEmail(
+  all: MasterConsignor[]
+): MasterConsignor[][] {
   const byEmail = new Map<string, MasterConsignor[]>();
-  for (const m of all) {
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i]!;
     const e = normalizeEmail(m.email);
     if (!e) continue;
     const list = byEmail.get(e) ?? [];
     list.push(m);
     byEmail.set(e, list);
   }
+  return Array.from(byEmail.values()).filter((g) => g.length >= 2);
+}
 
+function groupMasterConsignorsByPhone(
+  all: MasterConsignor[]
+): MasterConsignor[][] {
+  const byPhone = new Map<string, MasterConsignor[]>();
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i]!;
+    const phone = digitsOnly(m.phone);
+    if (phone.length < 7) continue;
+    const list = byPhone.get(phone) ?? [];
+    list.push(m);
+    byPhone.set(phone, list);
+  }
+  const groups = Array.from(byPhone.values()).filter((g) => g.length >= 2);
+  const out: MasterConsignor[][] = [];
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i]!;
+    let compatible = true;
+    for (let j = 0; j < group.length && compatible; j++) {
+      for (let k = j + 1; k < group.length; k++) {
+        if (!emailsCompatible(group[j]!.email, group[k]!.email)) {
+          compatible = false;
+          break;
+        }
+      }
+    }
+    if (compatible) out.push(group);
+  }
+  return out;
+}
+
+function pickConsignorField(
+  winner: MasterConsignor,
+  losers: MasterConsignor[],
+  key: "phone" | "email" | "mailingAddress" | "notes"
+): string | undefined {
+  const own = optTrim(winner[key]);
+  if (own) return own;
+  for (let i = 0; i < losers.length; i++) {
+    const v = optTrim(losers[i]![key]);
+    if (v) return v;
+  }
+  return undefined;
+}
+
+async function consolidateConsignorGroups(
+  db: AuctionDB,
+  groupFn: (all: MasterConsignor[]) => MasterConsignor[][]
+): Promise<number> {
+  const all = await db.masterConsignors.toArray();
+  const groups = groupFn(all);
   let removed = 0;
-  const consignorGroups = Array.from(byEmail.values());
-  for (let i = 0; i < consignorGroups.length; i++) {
-    const group = consignorGroups[i]!;
-    if (group.length < 2) continue;
-    group.sort((a, b) => {
-      const byUpdated = safeMs(b.updatedAt) - safeMs(a.updatedAt);
-      if (byUpdated !== 0) return byUpdated;
-      return safeMs(a.createdAt) - safeMs(b.createdAt);
-    });
-    const winner = group[0]!;
-    const losers = group.slice(1);
+  for (let i = 0; i < groups.length; i++) {
+    const sorted = sortMastersNewestFirst(groups[i]!);
+    const winner = sorted[0]!;
+    const losers = sorted.slice(1);
+    const patch: Partial<MasterConsignor> = {
+      phone: pickConsignorField(winner, losers, "phone"),
+      email: pickConsignorField(winner, losers, "email"),
+      mailingAddress: pickConsignorField(winner, losers, "mailingAddress"),
+      notes: pickConsignorField(winner, losers, "notes"),
+    };
+    if (winner.commissionRate == null) {
+      for (let j = 0; j < losers.length; j++) {
+        if (losers[j]!.commissionRate != null) {
+          patch.commissionRate = losers[j]!.commissionRate;
+          break;
+        }
+      }
+    }
+    if (winner.id != null) {
+      await db.masterConsignors.update(winner.id, patch);
+    }
     for (let j = 0; j < losers.length; j++) {
       const loser = losers[j]!;
       await repointConsignorMasterLinks(db, loser.syncKey, winner.syncKey);
-      if (loser.id != null) {
-        await db.masterConsignors.delete(loser.id);
-        removed++;
-      }
+      const deleted = await db.masterConsignors
+        .where("syncKey")
+        .equals(loser.syncKey)
+        .delete();
+      removed += deleted;
     }
   }
-  return { removed };
+  return removed;
 }
 
 export async function consolidateDirectoryDuplicates(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Pencil } from "lucide-react";
 import { Header } from "@/components/layout/Header";
@@ -23,6 +23,7 @@ import { MasterBidderForm } from "@/components/directory/MasterBidderForm";
 import { MasterConsignorForm } from "@/components/directory/MasterConsignorForm";
 import { ResaleFlag } from "@/components/invoices/ResaleFlag";
 import type { MasterBidder, MasterConsignor } from "@/lib/db";
+import { cleanupDirectoryDuplicates } from "@/lib/directory/sync";
 
 type Tab = "bidders" | "consignors";
 
@@ -41,6 +42,46 @@ export default function DirectoryPage() {
   const [consignorFormOpen, setConsignorFormOpen] = useState(false);
   const [editingConsignor, setEditingConsignor] =
     useState<MasterConsignor | null>(null);
+
+  useEffect(() => {
+    if (!ready || !db) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await cleanupDirectoryDuplicates(db);
+        if (
+          cancelled ||
+          (result.biddersRemoved === 0 && result.consignorsRemoved === 0)
+        ) {
+          return;
+        }
+        const parts: string[] = [];
+        if (result.biddersRemoved > 0) {
+          parts.push(
+            `${result.biddersRemoved} duplicate bidder${
+              result.biddersRemoved === 1 ? "" : "s"
+            }`
+          );
+        }
+        if (result.consignorsRemoved > 0) {
+          parts.push(
+            `${result.consignorsRemoved} duplicate consignor${
+              result.consignorsRemoved === 1 ? "" : "s"
+            }`
+          );
+        }
+        showToast({
+          kind: "success",
+          message: `Removed ${parts.join(" and ")} from Directory.`,
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, db, showToast]);
 
   const masters = useLiveQuery(
     async () =>
