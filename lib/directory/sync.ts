@@ -124,7 +124,6 @@ export async function syncDirectoryWithCloud(db: AuctionDB): Promise<void> {
     /* network */
   }
   try {
-    // Always collapse local dupes after pull (and push if we removed any).
     await cleanupDirectoryDuplicates(db);
   } catch {
     /* ignore */

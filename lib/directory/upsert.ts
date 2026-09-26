@@ -524,6 +524,46 @@ export async function consolidateDirectoryDuplicates(
   };
 }
 
+/** Delete master bidders by syncKey; clear event links; does not touch event roster rows otherwise. */
+export async function deleteMasterBidders(
+  db: AuctionDB,
+  syncKeys: string[]
+): Promise<number> {
+  let removed = 0;
+  for (let i = 0; i < syncKeys.length; i++) {
+    const key = syncKeys[i]!;
+    if (!key) continue;
+    await db.bidders
+      .where("masterSyncKey")
+      .equals(key)
+      .modify((b) => {
+        delete b.masterSyncKey;
+      });
+    removed += await db.masterBidders.where("syncKey").equals(key).delete();
+  }
+  return removed;
+}
+
+/** Delete master consignors by syncKey; clear event links. */
+export async function deleteMasterConsignors(
+  db: AuctionDB,
+  syncKeys: string[]
+): Promise<number> {
+  let removed = 0;
+  for (let i = 0; i < syncKeys.length; i++) {
+    const key = syncKeys[i]!;
+    if (!key) continue;
+    await db.consignors
+      .where("masterSyncKey")
+      .equals(key)
+      .modify((c) => {
+        delete c.masterSyncKey;
+      });
+    removed += await db.masterConsignors.where("syncKey").equals(key).delete();
+  }
+  return removed;
+}
+
 export async function findEventBidderByMaster(
   db: AuctionDB,
   eventId: number,

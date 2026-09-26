@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Pencil } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useUserDb } from "@/components/providers/UserDbProvider";
 import { useCurrentEvent } from "@/lib/hooks/useCurrentEvent";
 import { useToast } from "@/components/providers/ToastProvider";
@@ -23,7 +24,14 @@ import { MasterBidderForm } from "@/components/directory/MasterBidderForm";
 import { MasterConsignorForm } from "@/components/directory/MasterConsignorForm";
 import { ResaleFlag } from "@/components/invoices/ResaleFlag";
 import type { MasterBidder, MasterConsignor } from "@/lib/db";
-import { cleanupDirectoryDuplicates } from "@/lib/directory/sync";
+import {
+  cleanupDirectoryDuplicates,
+  pushDirectoryToCloud,
+} from "@/lib/directory/sync";
+import {
+  deleteMasterBidders,
+  deleteMasterConsignors,
+} from "@/lib/directory/upsert";
 
 type Tab = "bidders" | "consignors";
 
@@ -42,6 +50,17 @@ export default function DirectoryPage() {
   const [consignorFormOpen, setConsignorFormOpen] = useState(false);
   const [editingConsignor, setEditingConsignor] =
     useState<MasterConsignor | null>(null);
+  const [selectedBidderKeys, setSelectedBidderKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [selectedConsignorKeys, setSelectedConsignorKeys] = useState<
+    Set<string>
+  >(() => new Set());
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: Tab;
+    syncKeys: string[];
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!ready || !db) return;
@@ -155,6 +174,131 @@ export default function DirectoryPage() {
     return rows;
   }, [masters, search, consignorFilter, inEventOnly, consignorKeys]);
 
+  const visibleBidderKeySet = useMemo(
+    () => new Set(bidderRows.map((b) => b.syncKey)),
+    [bidderRows]
+  );
+  const visibleConsignorKeySet = useMemo(
+    () => new Set(consignorRows.map((c) => c.syncKey)),
+    [consignorRows]
+  );
+
+  const allVisibleBiddersSelected =
+    bidderRows.length > 0 &&
+    bidderRows.every((b) => selectedBidderKeys.has(b.syncKey));
+  const allVisibleConsignorsSelected =
+    consignorRows.length > 0 &&
+    consignorRows.every((c) => selectedConsignorKeys.has(c.syncKey));
+
+  const selectedCount =
+    tab === "bidders" ? selectedBidderKeys.size : selectedConsignorKeys.size;
+
+  function switchTab(next: Tab) {
+    setTab(next);
+    setSearch("");
+    setSelectedBidderKeys(new Set());
+    setSelectedConsignorKeys(new Set());
+  }
+
+  function toggleBidder(syncKey: string) {
+    setSelectedBidderKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(syncKey)) next.delete(syncKey);
+      else next.add(syncKey);
+      return next;
+    });
+  }
+
+  function toggleConsignor(syncKey: string) {
+    setSelectedConsignorKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(syncKey)) next.delete(syncKey);
+      else next.add(syncKey);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisibleBidders() {
+    setSelectedBidderKeys((prev) => {
+      if (allVisibleBiddersSelected) {
+        const next = new Set(prev);
+        for (const key of visibleBidderKeySet) next.delete(key);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const key of visibleBidderKeySet) next.add(key);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisibleConsignors() {
+    setSelectedConsignorKeys((prev) => {
+      if (allVisibleConsignorsSelected) {
+        const next = new Set(prev);
+        for (const key of visibleConsignorKeySet) next.delete(key);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const key of visibleConsignorKeySet) next.add(key);
+      return next;
+    });
+  }
+
+  async function confirmDelete() {
+    if (!db || !pendingDelete || pendingDelete.syncKeys.length === 0) return;
+    setDeleting(true);
+    try {
+      const keys = pendingDelete.syncKeys;
+      if (pendingDelete.kind === "bidders") {
+        const n = await deleteMasterBidders(db, keys);
+        setSelectedBidderKeys((prev) => {
+          const next = new Set(prev);
+          for (const k of keys) next.delete(k);
+          return next;
+        });
+        try {
+          await pushDirectoryToCloud(db);
+        } catch {
+          /* background */
+        }
+        showToast({
+          kind: "success",
+          message:
+            n === 1
+              ? "Deleted 1 bidder from Directory."
+              : `Deleted ${n} bidders from Directory.`,
+        });
+      } else {
+        const n = await deleteMasterConsignors(db, keys);
+        setSelectedConsignorKeys((prev) => {
+          const next = new Set(prev);
+          for (const k of keys) next.delete(k);
+          return next;
+        });
+        try {
+          await pushDirectoryToCloud(db);
+        } catch {
+          /* background */
+        }
+        showToast({
+          kind: "success",
+          message:
+            n === 1
+              ? "Deleted 1 consignor from Directory."
+              : `Deleted ${n} consignors from Directory.`,
+        });
+      }
+      setPendingDelete(null);
+    } catch (e) {
+      showToast({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Could not delete.",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function exportBidders() {
     downloadCsv(
       "clerkbid-master-bidders.csv",
@@ -194,6 +338,17 @@ export default function DirectoryPage() {
     );
   }
 
+  const deleteMessage =
+    pendingDelete == null
+      ? ""
+      : pendingDelete.kind === "bidders"
+        ? pendingDelete.syncKeys.length === 1
+          ? "Remove this bidder from the Directory? Event registrations are kept; only the master Directory entry is deleted."
+          : `Remove ${pendingDelete.syncKeys.length} bidders from the Directory? Event registrations are kept; only master Directory entries are deleted.`
+        : pendingDelete.syncKeys.length === 1
+          ? "Remove this consignor from the Directory? Event consignors are kept; only the master Directory entry is deleted."
+          : `Remove ${pendingDelete.syncKeys.length} consignors from the Directory? Event consignors are kept; only master Directory entries are deleted.`;
+
   return (
     <div>
       <Header
@@ -202,6 +357,20 @@ export default function DirectoryPage() {
         actions={
           tab === "bidders" ? (
             <>
+              {selectedBidderKeys.size > 0 ? (
+                <Button
+                  variant="danger"
+                  type="button"
+                  onClick={() =>
+                    setPendingDelete({
+                      kind: "bidders",
+                      syncKeys: Array.from(selectedBidderKeys),
+                    })
+                  }
+                >
+                  Delete selected ({selectedBidderKeys.size})
+                </Button>
+              ) : null}
               <Button variant="secondary" type="button" onClick={exportBidders}>
                 Export CSV
               </Button>
@@ -217,6 +386,20 @@ export default function DirectoryPage() {
             </>
           ) : (
             <>
+              {selectedConsignorKeys.size > 0 ? (
+                <Button
+                  variant="danger"
+                  type="button"
+                  onClick={() =>
+                    setPendingDelete({
+                      kind: "consignors",
+                      syncKeys: Array.from(selectedConsignorKeys),
+                    })
+                  }
+                >
+                  Delete selected ({selectedConsignorKeys.size})
+                </Button>
+              ) : null}
               <Button variant="secondary" type="button" onClick={exportConsignors}>
                 Export CSV
               </Button>
@@ -238,20 +421,14 @@ export default function DirectoryPage() {
         <Button
           variant={tab === "bidders" ? "primary" : "secondary"}
           type="button"
-          onClick={() => {
-            setTab("bidders");
-            setSearch("");
-          }}
+          onClick={() => switchTab("bidders")}
         >
           Bidders
         </Button>
         <Button
           variant={tab === "consignors" ? "primary" : "secondary"}
           type="button"
-          onClick={() => {
-            setTab("consignors");
-            setSearch("");
-          }}
+          onClick={() => switchTab("consignors")}
         >
           Consignors
         </Button>
@@ -310,11 +487,26 @@ export default function DirectoryPage() {
         ) : null}
       </div>
 
+      {selectedCount > 0 ? (
+        <p className="mb-2 text-sm text-muted">
+          {selectedCount} selected
+        </p>
+      ) : null}
+
       {tab === "bidders" ? (
         <div className="overflow-x-auto rounded-xl border border-navy/10 bg-white dark:border-slate-700 dark:bg-slate-900">
           <table className="w-full min-w-[640px] text-sm">
             <thead className="border-b border-navy/10 bg-surface dark:border-slate-700 dark:bg-slate-800/80">
               <tr>
+                <th className="w-10 px-3 py-2 text-left">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible bidders"
+                    checked={allVisibleBiddersSelected}
+                    disabled={bidderRows.length === 0}
+                    onChange={toggleSelectAllVisibleBidders}
+                  />
+                </th>
                 <th className="px-3 py-2 text-left">Name</th>
                 <th className="px-3 py-2 text-left">Phone</th>
                 <th className="px-3 py-2 text-left">Email</th>
@@ -326,13 +518,21 @@ export default function DirectoryPage() {
             <tbody className="divide-y divide-navy/10 dark:divide-slate-700">
               {bidderRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-muted">
+                  <td colSpan={7} className="px-3 py-8 text-center text-muted">
                     No master bidders match.
                   </td>
                 </tr>
               ) : (
                 bidderRows.map((b) => (
                   <tr key={b.syncKey}>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${b.firstName} ${b.lastName}`}
+                        checked={selectedBidderKeys.has(b.syncKey)}
+                        onChange={() => toggleBidder(b.syncKey)}
+                      />
+                    </td>
                     <td className="px-3 py-2">
                       {b.lastName}, {b.firstName}
                     </td>
@@ -364,6 +564,20 @@ export default function DirectoryPage() {
                       >
                         <Pencil className="h-4 w-4" />
                       </Button>
+                      <Button
+                        variant="ghost"
+                        type="button"
+                        className="!p-1.5 text-danger"
+                        aria-label={`Delete ${b.firstName} ${b.lastName}`}
+                        onClick={() =>
+                          setPendingDelete({
+                            kind: "bidders",
+                            syncKeys: [b.syncKey],
+                          })
+                        }
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </td>
                   </tr>
                 ))
@@ -376,6 +590,15 @@ export default function DirectoryPage() {
           <table className="w-full min-w-[640px] text-sm">
             <thead className="border-b border-navy/10 bg-surface dark:border-slate-700 dark:bg-slate-800/80">
               <tr>
+                <th className="w-10 px-3 py-2 text-left">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible consignors"
+                    checked={allVisibleConsignorsSelected}
+                    disabled={consignorRows.length === 0}
+                    onChange={toggleSelectAllVisibleConsignors}
+                  />
+                </th>
                 <th className="px-3 py-2 text-left">Name</th>
                 <th className="px-3 py-2 text-left">Phone</th>
                 <th className="px-3 py-2 text-left">Email</th>
@@ -386,13 +609,21 @@ export default function DirectoryPage() {
             <tbody className="divide-y divide-navy/10 dark:divide-slate-700">
               {consignorRows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-muted">
+                  <td colSpan={6} className="px-3 py-8 text-center text-muted">
                     No master consignors match.
                   </td>
                 </tr>
               ) : (
                 consignorRows.map((c) => (
                   <tr key={c.syncKey}>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${c.name}`}
+                        checked={selectedConsignorKeys.has(c.syncKey)}
+                        onChange={() => toggleConsignor(c.syncKey)}
+                      />
+                    </td>
                     <td className="px-3 py-2">{c.name}</td>
                     <td className="px-3 py-2 font-mono text-muted">
                       {c.phone ?? "—"}
@@ -415,6 +646,20 @@ export default function DirectoryPage() {
                         }}
                       >
                         <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        type="button"
+                        className="!p-1.5 text-danger"
+                        aria-label={`Delete ${c.name}`}
+                        onClick={() =>
+                          setPendingDelete({
+                            kind: "consignors",
+                            syncKeys: [c.syncKey],
+                          })
+                        }
+                      >
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </td>
                   </tr>
@@ -446,6 +691,25 @@ export default function DirectoryPage() {
         onSaved={() =>
           showToast({ kind: "success", message: "Master consignor saved." })
         }
+      />
+      <ConfirmDialog
+        open={pendingDelete != null}
+        title={
+          pendingDelete?.kind === "consignors"
+            ? pendingDelete.syncKeys.length === 1
+              ? "Delete consignor"
+              : "Delete consignors"
+            : pendingDelete?.syncKeys.length === 1
+              ? "Delete bidder"
+              : "Delete bidders"
+        }
+        message={deleteMessage}
+        confirmLabel={deleting ? "Deleting…" : "Delete"}
+        danger
+        onClose={() => {
+          if (!deleting) setPendingDelete(null);
+        }}
+        onConfirm={() => void confirmDelete()}
       />
     </div>
   );

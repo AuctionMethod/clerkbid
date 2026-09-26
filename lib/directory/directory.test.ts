@@ -313,6 +313,45 @@ describe("directory seed and upsert", () => {
     expect(result.removed).toBe(0);
     expect(await db.masterBidders.count()).toBe(2);
   });
+
+  it("deleteMasterBidders removes masters and clears event links", async () => {
+    const { deleteMasterBidders } = await import("@/lib/directory/upsert");
+    await db.masterBidders.add({
+      syncKey: "del-me",
+      firstName: "Gone",
+      lastName: "Bidder",
+      email: "gone@x.com",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const eventId = (await db.events.add({
+      name: "A",
+      organizationName: "Org",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "aaaaaaaa-bbbb-1ccc-8ddd-eeeeeeeeeeee",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.bidders.add({
+      eventId,
+      paddleNumber: 1,
+      firstName: "Gone",
+      lastName: "Bidder",
+      email: "gone@x.com",
+      masterSyncKey: "del-me",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const n = await deleteMasterBidders(db, ["del-me"]);
+    expect(n).toBe(1);
+    expect(await db.masterBidders.count()).toBe(0);
+    const bidder = await db.bidders.toArray();
+    expect(bidder[0]?.masterSyncKey).toBeUndefined();
+    expect(bidder[0]?.firstName).toBe("Gone");
+  });
 });
 
 describe("mergeDirectorySnapshot", () => {
