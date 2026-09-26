@@ -222,11 +222,11 @@ export default function DirectoryPage() {
     setSelectedBidderKeys((prev) => {
       if (allVisibleBiddersSelected) {
         const next = new Set(prev);
-        for (const key of visibleBidderKeySet) next.delete(key);
+        visibleBidderKeySet.forEach((key) => next.delete(key));
         return next;
       }
       const next = new Set(prev);
-      for (const key of visibleBidderKeySet) next.add(key);
+      visibleBidderKeySet.forEach((key) => next.add(key));
       return next;
     });
   }
@@ -235,11 +235,11 @@ export default function DirectoryPage() {
     setSelectedConsignorKeys((prev) => {
       if (allVisibleConsignorsSelected) {
         const next = new Set(prev);
-        for (const key of visibleConsignorKeySet) next.delete(key);
+        visibleConsignorKeySet.forEach((key) => next.delete(key));
         return next;
       }
       const next = new Set(prev);
-      for (const key of visibleConsignorKeySet) next.add(key);
+      visibleConsignorKeySet.forEach((key) => next.add(key));
       return next;
     });
   }
@@ -253,7 +253,7 @@ export default function DirectoryPage() {
         const n = await deleteMasterBidders(db, keys);
         setSelectedBidderKeys((prev) => {
           const next = new Set(prev);
-          for (const k of keys) next.delete(k);
+          keys.forEach((k) => next.delete(k));
           return next;
         });
         try {
@@ -272,7 +272,7 @@ export default function DirectoryPage() {
         const n = await deleteMasterConsignors(db, keys);
         setSelectedConsignorKeys((prev) => {
           const next = new Set(prev);
-          for (const k of keys) next.delete(k);
+          keys.forEach((k) => next.delete(k));
           return next;
         });
         try {
