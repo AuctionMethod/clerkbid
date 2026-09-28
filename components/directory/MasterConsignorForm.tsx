@@ -7,11 +7,11 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { optTrim } from "@/lib/directory/match";
+import { publishDirectoryChanges } from "@/lib/directory/sync";
 import {
   consolidateMasterConsignorsByEmail,
   upsertMasterConsignor,
 } from "@/lib/directory/upsert";
-import { pushDirectoryToCloud } from "@/lib/directory/sync";
 
 export function MasterConsignorForm({
   open,
@@ -83,10 +83,18 @@ export function MasterConsignorForm({
         { preferredSyncKey: editing?.syncKey }
       );
       await consolidateMasterConsignorsByEmail(db);
-      try {
-        await pushDirectoryToCloud(db);
-      } catch {
-        /* background */
+      const pub = await publishDirectoryChanges(db);
+      if (pub.conflictReplaced) {
+        setError(
+          "Saved locally, but another device updated Directory — refreshed from cloud. Re-apply your edit if needed."
+        );
+        return;
+      }
+      if (!pub.ok) {
+        setError(
+          "Saved on this device, but could not sync Directory. Stay online and try Save again."
+        );
+        return;
       }
       onSaved();
       onClose();

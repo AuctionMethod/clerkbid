@@ -1,5 +1,5 @@
 import type { AuctionDB } from "@/lib/db";
-import { ensureSettingsRow } from "@/lib/settings";
+import { ensureSettingsRow, markDirectoryDirty } from "@/lib/settings";
 import { withCloudSyncApply } from "@/lib/db/syncApplyGuard";
 import {
   consolidateDirectoryDuplicates,
@@ -74,6 +74,7 @@ export async function seedDirectoryFromEvents(db: AuctionDB): Promise<void> {
   });
 
   await db.settings.update(1, { directorySeededAt: new Date() });
+  await markDirectoryDirty(db);
 
   const now = new Date();
   const events = await db.events.toArray();

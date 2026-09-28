@@ -25,7 +25,7 @@ import type { Consignor } from "@/lib/db";
 import { mutateWithParentEventTouch } from "@/lib/db/mutateWithParentEventTouch";
 import { flushSingleEventToCloudSnapshot } from "@/lib/services/cloudSync";
 import { findOrCreateMasterConsignor } from "@/lib/directory/upsert";
-import { pushDirectoryToCloud } from "@/lib/directory/sync";
+import { publishDirectoryChanges } from "@/lib/directory/sync";
 
 const linkSecondary =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-navy/15 bg-surface px-4 py-2 text-sm font-medium text-ink transition hover:border-navy/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-navy focus-visible:ring-offset-2 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:border-slate-500 dark:focus-visible:ring-offset-slate-950";
@@ -178,11 +178,11 @@ export default function ConsignorsPage() {
                   });
                   if (toAdd.length > 0) {
                     scheduleCloudPush();
-                    try {
-                      await pushDirectoryToCloud(db);
-                    } catch {
-                      /* background */
-                    }
+                      try {
+                        await publishDirectoryChanges(db);
+                      } catch {
+                        /* background */
+                      }
                   }
                 } catch (err) {
                   showToast({

@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/Input";
 import { getSuggestedPaddleNumber } from "@/lib/hooks/useBidders";
 import { mutateWithParentEventTouch } from "@/lib/db/mutateWithParentEventTouch";
 import { flushSingleEventToCloudSnapshot } from "@/lib/services/cloudSync";
-import { pushDirectoryToCloud } from "@/lib/directory/sync";
+import { publishDirectoryChanges } from "@/lib/directory/sync";
 import { liveQueryGuard } from "@/lib/dexie/liveQueryGuard";
 import { DirectoryLookupModal } from "@/components/directory/DirectoryLookupModal";
 import { searchMasterBidders } from "@/lib/directory/search";
@@ -255,7 +255,7 @@ export function BidderForm({
           /* fall back to debounced push */
         }
         try {
-          await pushDirectoryToCloud(db);
+          await publishDirectoryChanges(db);
         } catch {
           /* fall back to background directory sync */
         }

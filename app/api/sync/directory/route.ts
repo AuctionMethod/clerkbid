@@ -2,13 +2,19 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
 import { sql } from "@/lib/db/postgres";
-import { DIRECTORY_EXPORT_VERSION } from "@/lib/directory/payload";
+import {
+  DIRECTORY_EXPORT_VERSION,
+  isDirectoryExportPayload,
+} from "@/lib/directory/payload";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MISSING_TABLE =
   "Database is missing the vendor directory table. Run db/migrate_vendor_directory.sql in Neon.";
+
+/** Allow tiny clock skew when comparing baseUpdatedAt to server updated_at. */
+const SKEW_MS = 2000;
 
 export async function GET() {
   try {
@@ -63,6 +69,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       payload?: unknown;
       clientExportedAt?: string;
+      baseUpdatedAt?: string | null;
     };
     if (body.payload == null || typeof body.payload !== "object") {
       return NextResponse.json({ error: "payload is required." }, { status: 400 });
@@ -71,14 +78,49 @@ export async function POST(req: Request) {
 
     const { rows: existing } = await sql<{
       updated_at: Date;
+      payload: unknown;
       same: boolean;
     }>`
-      SELECT updated_at, (payload = ${payloadJson}::jsonb) AS same
+      SELECT updated_at, payload, (payload = ${payloadJson}::jsonb) AS same
       FROM vendor_directory_snapshots
       WHERE vendor_id = ${vendorId}
       LIMIT 1
     `;
     const prev = existing[0];
+
+    if (prev) {
+      const serverMs = new Date(prev.updated_at).getTime();
+      const baseRaw = body.baseUpdatedAt;
+      const baseMs =
+        baseRaw != null && baseRaw !== ""
+          ? new Date(baseRaw).getTime()
+          : NaN;
+      const baseMissing = baseRaw == null || baseRaw === "";
+      const baseStale =
+        !Number.isFinite(baseMs) || serverMs > baseMs + SKEW_MS;
+
+      if (baseMissing || baseStale) {
+        // Same payload is idempotent — treat as success without bumping.
+        if (prev.same) {
+          return NextResponse.json({
+            ok: true,
+            unchanged: true,
+            updatedAt: new Date(prev.updated_at).toISOString(),
+          });
+        }
+        return NextResponse.json(
+          {
+            error: "stale_base",
+            updatedAt: new Date(prev.updated_at).toISOString(),
+            payload: isDirectoryExportPayload(prev.payload)
+              ? prev.payload
+              : prev.payload,
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     if (prev?.same) {
       return NextResponse.json({
         ok: true,

@@ -26,12 +26,13 @@ import { ResaleFlag } from "@/components/invoices/ResaleFlag";
 import type { MasterBidder, MasterConsignor } from "@/lib/db";
 import {
   cleanupDirectoryDuplicates,
-  pushDirectoryToCloud,
+  publishDirectoryChanges,
 } from "@/lib/directory/sync";
 import {
   deleteMasterBidders,
   deleteMasterConsignors,
 } from "@/lib/directory/upsert";
+import { ensureSettingsRow } from "@/lib/settings";
 
 type Tab = "bidders" | "consignors";
 
@@ -68,10 +69,16 @@ export default function DirectoryPage() {
     (async () => {
       try {
         const result = await cleanupDirectoryDuplicates(db);
-        if (
-          cancelled ||
-          (result.biddersRemoved === 0 && result.consignorsRemoved === 0)
-        ) {
+        if (cancelled) return;
+        if (result.conflict) {
+          showToast({
+            kind: "info",
+            message:
+              "Another device updated Directory; local Directory was refreshed from the cloud.",
+          });
+          return;
+        }
+        if (result.biddersRemoved === 0 && result.consignorsRemoved === 0) {
           return;
         }
         const parts: string[] = [];
@@ -101,6 +108,21 @@ export default function DirectoryPage() {
       cancelled = true;
     };
   }, [ready, db, showToast]);
+
+  const directoryDirty = useLiveQuery(
+    async () =>
+      liveQueryGuard(
+        "directory.dirty",
+        async () => {
+          if (!ready || !db) return false;
+          await ensureSettingsRow(db);
+          const s = await db.settings.get(1);
+          return Boolean(s?.directoryDirty);
+        },
+        false
+      ),
+    [ready, db]
+  );
 
   const masters = useLiveQuery(
     async () =>
@@ -256,18 +278,28 @@ export default function DirectoryPage() {
           keys.forEach((k) => next.delete(k));
           return next;
         });
-        try {
-          await pushDirectoryToCloud(db);
-        } catch {
-          /* background */
+        const pub = await publishDirectoryChanges(db);
+        if (pub.conflictReplaced) {
+          showToast({
+            kind: "info",
+            message:
+              "Another device updated Directory; your unsynced local Directory changes were replaced from the cloud.",
+          });
+        } else if (!pub.ok) {
+          showToast({
+            kind: "error",
+            message:
+              "Deleted locally, but could not sync Directory. Stay online and open Directory again.",
+          });
+        } else {
+          showToast({
+            kind: "success",
+            message:
+              n === 1
+                ? "Deleted 1 bidder from Directory."
+                : `Deleted ${n} bidders from Directory.`,
+          });
         }
-        showToast({
-          kind: "success",
-          message:
-            n === 1
-              ? "Deleted 1 bidder from Directory."
-              : `Deleted ${n} bidders from Directory.`,
-        });
       } else {
         const n = await deleteMasterConsignors(db, keys);
         setSelectedConsignorKeys((prev) => {
@@ -275,18 +307,28 @@ export default function DirectoryPage() {
           keys.forEach((k) => next.delete(k));
           return next;
         });
-        try {
-          await pushDirectoryToCloud(db);
-        } catch {
-          /* background */
+        const pub = await publishDirectoryChanges(db);
+        if (pub.conflictReplaced) {
+          showToast({
+            kind: "info",
+            message:
+              "Another device updated Directory; your unsynced local Directory changes were replaced from the cloud.",
+          });
+        } else if (!pub.ok) {
+          showToast({
+            kind: "error",
+            message:
+              "Deleted locally, but could not sync Directory. Stay online and open Directory again.",
+          });
+        } else {
+          showToast({
+            kind: "success",
+            message:
+              n === 1
+                ? "Deleted 1 consignor from Directory."
+                : `Deleted ${n} consignors from Directory.`,
+          });
         }
-        showToast({
-          kind: "success",
-          message:
-            n === 1
-              ? "Deleted 1 consignor from Directory."
-              : `Deleted ${n} consignors from Directory.`,
-        });
       }
       setPendingDelete(null);
     } catch (e) {
@@ -353,7 +395,11 @@ export default function DirectoryPage() {
     <div>
       <Header
         title="Directory"
-        description="Master bidders and consignors across all events. Lookup from an event to assign a paddle or consignor number."
+        description={
+          directoryDirty
+            ? "Master bidders and consignors across all events. Directory changes are waiting to sync to the cloud."
+            : "Master bidders and consignors across all events. Lookup from an event to assign a paddle or consignor number."
+        }
         actions={
           tab === "bidders" ? (
             <>

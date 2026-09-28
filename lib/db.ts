@@ -235,6 +235,10 @@ export interface AppSettings {
   lastBackupNudgeDismissedAt?: Date;
   lastDirectoryPushAt?: Date;
   lastDirectoryPullAt?: Date;
+  /** Server `updated_at` from last successful Directory pull/push (optimistic concurrency base). */
+  lastDirectoryServerUpdatedAt?: Date;
+  /** True when local master Directory has unsynced edits/deletes. */
+  directoryDirty?: boolean;
   /** Set after one-time seed of master lists from existing event registries. */
   directorySeededAt?: Date;
   /** Local only — not included in JSON/cloud export. */

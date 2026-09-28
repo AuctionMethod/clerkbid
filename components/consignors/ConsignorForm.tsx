@@ -18,7 +18,7 @@ import {
   findEventConsignorByMaster,
   upsertMasterConsignor,
 } from "@/lib/directory/upsert";
-import { pushDirectoryToCloud } from "@/lib/directory/sync";
+import { publishDirectoryChanges } from "@/lib/directory/sync";
 import {
   eventRosterNumberTakenByAnother,
   rosterNumberChanged,
@@ -260,7 +260,7 @@ export function ConsignorForm({
       });
     }
     try {
-      await pushDirectoryToCloud(db);
+      await publishDirectoryChanges(db);
     } catch {
       /* background */
     }

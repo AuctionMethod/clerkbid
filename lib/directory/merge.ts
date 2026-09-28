@@ -1,133 +1,124 @@
-import type { AuctionDB, MasterBidder, MasterConsignor } from "@/lib/db";
+import type { AuctionDB } from "@/lib/db";
 import {
   parseDirectoryDate,
   type DirectoryExportPayload,
 } from "@/lib/directory/payload";
 import { consolidateDirectoryDuplicates } from "@/lib/directory/upsert";
-import { normalizeEmail } from "@/lib/directory/match";
 import { withCloudSyncApply } from "@/lib/db/syncApplyGuard";
 
-function safeMs(d: Date | string | number | undefined | null): number {
-  const parsed = d instanceof Date ? d : d != null ? new Date(d) : null;
-  const t = parsed && !Number.isNaN(parsed.getTime()) ? parsed.getTime() : 0;
-  return t;
+/**
+ * Replace local master Directory with a remote vendor snapshot.
+ * Clears masters first so deletes on the server stay deleted locally.
+ * Clears event masterSyncKey links that no longer exist after replace.
+ */
+export async function replaceDirectorySnapshot(
+  db: AuctionDB,
+  remote: DirectoryExportPayload
+): Promise<{ bidderCount: number; consignorCount: number }> {
+  const keepBidderKeys = new Set(remote.bidders.map((b) => b.syncKey));
+  const keepConsignorKeys = new Set(remote.consignors.map((c) => c.syncKey));
+
+  await withCloudSyncApply(async () => {
+    await db.transaction(
+      "rw",
+      [db.masterBidders, db.masterConsignors, db.bidders, db.consignors],
+      async () => {
+        await db.masterBidders.clear();
+        await db.masterConsignors.clear();
+
+        for (let i = 0; i < remote.bidders.length; i++) {
+          const rb = remote.bidders[i]!;
+          await db.masterBidders.add({
+            syncKey: rb.syncKey,
+            firstName: rb.firstName,
+            lastName: rb.lastName,
+            phone: rb.phone,
+            email: rb.email,
+            mailingAddress: rb.mailingAddress,
+            resaleNumber: rb.resaleNumber,
+            createdAt: parseDirectoryDate(rb.createdAt),
+            updatedAt: parseDirectoryDate(rb.updatedAt),
+          });
+        }
+
+        for (let i = 0; i < remote.consignors.length; i++) {
+          const rc = remote.consignors[i]!;
+          await db.masterConsignors.add({
+            syncKey: rc.syncKey,
+            name: rc.name,
+            email: rc.email,
+            phone: rc.phone,
+            mailingAddress: rc.mailingAddress,
+            notes: rc.notes,
+            commissionRate: rc.commissionRate,
+            createdAt: parseDirectoryDate(rc.createdAt),
+            updatedAt: parseDirectoryDate(rc.updatedAt),
+          });
+        }
+
+        const eventBidders = await db.bidders.toArray();
+        for (let i = 0; i < eventBidders.length; i++) {
+          const b = eventBidders[i]!;
+          if (
+            b.id != null &&
+            b.masterSyncKey &&
+            !keepBidderKeys.has(b.masterSyncKey)
+          ) {
+            await db.bidders
+              .where("id")
+              .equals(b.id)
+              .modify((row) => {
+                delete row.masterSyncKey;
+              });
+          }
+        }
+
+        const eventConsignors = await db.consignors.toArray();
+        for (let i = 0; i < eventConsignors.length; i++) {
+          const c = eventConsignors[i]!;
+          if (
+            c.id != null &&
+            c.masterSyncKey &&
+            !keepConsignorKeys.has(c.masterSyncKey)
+          ) {
+            await db.consignors
+              .where("id")
+              .equals(c.id)
+              .modify((row) => {
+                delete row.masterSyncKey;
+              });
+          }
+        }
+      }
+    );
+
+    await consolidateDirectoryDuplicates(db);
+  });
+
+  return {
+    bidderCount: remote.bidders.length,
+    consignorCount: remote.consignors.length,
+  };
 }
 
-export type DirectoryMergeSummary = {
-  biddersAdded: number;
-  biddersUpdated: number;
-  consignorsAdded: number;
-  consignorsUpdated: number;
-};
-
 /**
- * Merge a vendor directory snapshot into local Dexie by `syncKey`,
- * preferring email uniqueness when a remote row shares an email with a
- * local row that has a different syncKey. Last-write-wins per record.
- * Local-only rows are kept, then email duplicates are consolidated.
+ * @deprecated Prefer replaceDirectorySnapshot for cloud pull.
+ * Delegates to replace so callers cannot resurrect deletes via union-merge.
  */
 export async function mergeDirectorySnapshot(
   db: AuctionDB,
   remote: DirectoryExportPayload
-): Promise<DirectoryMergeSummary> {
-  const summary: DirectoryMergeSummary = {
-    biddersAdded: 0,
+): Promise<{
+  biddersAdded: number;
+  biddersUpdated: number;
+  consignorsAdded: number;
+  consignorsUpdated: number;
+}> {
+  await replaceDirectorySnapshot(db, remote);
+  return {
+    biddersAdded: remote.bidders.length,
     biddersUpdated: 0,
-    consignorsAdded: 0,
+    consignorsAdded: remote.consignors.length,
     consignorsUpdated: 0,
   };
-
-  await db.transaction("rw", [db.masterBidders, db.masterConsignors], async () => {
-    const localBidders = await db.masterBidders.toArray();
-    const bidderByKey = new Map<string, MasterBidder>();
-    const bidderByEmail = new Map<string, MasterBidder>();
-    for (const b of localBidders) {
-      bidderByKey.set(b.syncKey, b);
-      const e = normalizeEmail(b.email);
-      if (e && !bidderByEmail.has(e)) bidderByEmail.set(e, b);
-    }
-
-    for (const rb of remote.bidders) {
-      const remoteUpdated = parseDirectoryDate(rb.updatedAt);
-      const remoteEmail = normalizeEmail(rb.email);
-      const local =
-        bidderByKey.get(rb.syncKey) ??
-        (remoteEmail ? bidderByEmail.get(remoteEmail) : undefined);
-
-      if (!local) {
-        await db.masterBidders.add({
-          syncKey: rb.syncKey,
-          firstName: rb.firstName,
-          lastName: rb.lastName,
-          phone: rb.phone,
-          email: rb.email,
-          mailingAddress: rb.mailingAddress,
-          resaleNumber: rb.resaleNumber,
-          createdAt: parseDirectoryDate(rb.createdAt),
-          updatedAt: remoteUpdated,
-        });
-        summary.biddersAdded++;
-      } else if (safeMs(remoteUpdated) > safeMs(local.updatedAt) && local.id != null) {
-        await db.masterBidders.update(local.id, {
-          firstName: rb.firstName,
-          lastName: rb.lastName,
-          phone: rb.phone,
-          email: rb.email,
-          mailingAddress: rb.mailingAddress,
-          resaleNumber: rb.resaleNumber,
-          updatedAt: remoteUpdated,
-        });
-        summary.biddersUpdated++;
-      }
-    }
-
-    const localConsignors = await db.masterConsignors.toArray();
-    const consignorByKey = new Map<string, MasterConsignor>();
-    const consignorByEmail = new Map<string, MasterConsignor>();
-    for (const c of localConsignors) {
-      consignorByKey.set(c.syncKey, c);
-      const e = normalizeEmail(c.email);
-      if (e && !consignorByEmail.has(e)) consignorByEmail.set(e, c);
-    }
-
-    for (const rc of remote.consignors) {
-      const remoteUpdated = parseDirectoryDate(rc.updatedAt);
-      const remoteEmail = normalizeEmail(rc.email);
-      const local =
-        consignorByKey.get(rc.syncKey) ??
-        (remoteEmail ? consignorByEmail.get(remoteEmail) : undefined);
-
-      if (!local) {
-        await db.masterConsignors.add({
-          syncKey: rc.syncKey,
-          name: rc.name,
-          email: rc.email,
-          phone: rc.phone,
-          mailingAddress: rc.mailingAddress,
-          notes: rc.notes,
-          commissionRate: rc.commissionRate,
-          createdAt: parseDirectoryDate(rc.createdAt),
-          updatedAt: remoteUpdated,
-        });
-        summary.consignorsAdded++;
-      } else if (safeMs(remoteUpdated) > safeMs(local.updatedAt) && local.id != null) {
-        await db.masterConsignors.update(local.id, {
-          name: rc.name,
-          email: rc.email,
-          phone: rc.phone,
-          mailingAddress: rc.mailingAddress,
-          notes: rc.notes,
-          commissionRate: rc.commissionRate,
-          updatedAt: remoteUpdated,
-        });
-        summary.consignorsUpdated++;
-      }
-    }
-  });
-
-  await withCloudSyncApply(async () => {
-    await consolidateDirectoryDuplicates(db);
-  });
-
-  return summary;
 }

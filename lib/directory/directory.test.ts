@@ -354,8 +354,75 @@ describe("directory seed and upsert", () => {
   });
 });
 
+describe("replaceDirectorySnapshot", () => {
+  it("replaces local masters and drops local-only orphans", async () => {
+    const { replaceDirectorySnapshot } = await import("@/lib/directory/merge");
+    await db.masterBidders.add({
+      syncKey: "orphan",
+      firstName: "Old",
+      lastName: "Orphan",
+      email: "orphan@x.com",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await db.masterBidders.add({
+      syncKey: "keep",
+      firstName: "Old",
+      lastName: "Keep",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const eventId = (await db.events.add({
+      name: "A",
+      organizationName: "Org",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "aaaaaaaa-bbbb-1ccc-8ddd-eeeeeeeeeeee",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    await db.bidders.add({
+      eventId,
+      paddleNumber: 1,
+      firstName: "Old",
+      lastName: "Orphan",
+      masterSyncKey: "orphan",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await replaceDirectorySnapshot(db, {
+      exportVersion: DIRECTORY_EXPORT_VERSION,
+      exportDate: "2026-02-01T00:00:00.000Z",
+      bidders: [
+        {
+          syncKey: "keep",
+          firstName: "New",
+          lastName: "Keep",
+          mailingAddress: "1 Main",
+          resaleNumber: "TX-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-02-01T00:00:00.000Z",
+        },
+      ],
+      consignors: [],
+    });
+
+    const masters = await db.masterBidders.toArray();
+    expect(masters).toHaveLength(1);
+    expect(masters[0]?.syncKey).toBe("keep");
+    expect(masters[0]?.firstName).toBe("New");
+    expect(masters[0]?.mailingAddress).toBe("1 Main");
+    expect(masters[0]?.resaleNumber).toBe("TX-1");
+    const bidder = await db.bidders.toArray();
+    expect(bidder[0]?.masterSyncKey).toBeUndefined();
+  });
+});
+
 describe("mergeDirectorySnapshot", () => {
-  it("adds remote-only records and updates when remote is newer", async () => {
+  it("delegates to replace (full remote set wins)", async () => {
     await db.masterBidders.add({
       syncKey: "same",
       firstName: "Old",
@@ -384,43 +451,9 @@ describe("mergeDirectorySnapshot", () => {
       ],
       consignors: [],
     });
-    expect(summary.biddersAdded).toBe(1);
-    expect(summary.biddersUpdated).toBe(1);
+    expect(summary.biddersAdded).toBe(2);
+    expect(await db.masterBidders.count()).toBe(2);
     const same = await db.masterBidders.where("syncKey").equals("same").first();
     expect(same?.firstName).toBe("New");
-  });
-
-  it("merges remote bidder onto local email match instead of duplicating", async () => {
-    await db.masterBidders.add({
-      syncKey: "local-key",
-      firstName: "Jane",
-      lastName: "Doe",
-      email: "jane@x.com",
-      mailingAddress: "Local",
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-    });
-    const summary = await mergeDirectorySnapshot(db, {
-      exportVersion: DIRECTORY_EXPORT_VERSION,
-      exportDate: "2026-03-01T00:00:00.000Z",
-      bidders: [
-        {
-          syncKey: "remote-key",
-          firstName: "Jane",
-          lastName: "Doe",
-          email: "jane@x.com",
-          mailingAddress: "Remote",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-03-01T00:00:00.000Z",
-        },
-      ],
-      consignors: [],
-    });
-    expect(summary.biddersAdded).toBe(0);
-    expect(summary.biddersUpdated).toBe(1);
-    expect(await db.masterBidders.count()).toBe(1);
-    const row = await db.masterBidders.toArray();
-    expect(row[0]?.syncKey).toBe("local-key");
-    expect(row[0]?.mailingAddress).toBe("Remote");
   });
 });
