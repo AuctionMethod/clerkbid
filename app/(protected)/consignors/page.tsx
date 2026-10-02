@@ -22,7 +22,10 @@ import {
   openConsignorStatementPdf,
 } from "@/lib/services/consignorStatementPdf";
 import type { Consignor } from "@/lib/db";
-import { mutateWithParentEventTouch } from "@/lib/db/mutateWithParentEventTouch";
+import {
+  mutateWithEventTables,
+  mutateWithParentEventTouch,
+} from "@/lib/db/mutateWithParentEventTouch";
 import { flushSingleEventToCloudSnapshot } from "@/lib/services/cloudSync";
 import { findOrCreateMasterConsignor } from "@/lib/directory/upsert";
 import { publishDirectoryChanges } from "@/lib/directory/sync";
@@ -127,10 +130,12 @@ export default function ConsignorsPage() {
                     return true;
                   });
                   const now = new Date();
-                  await mutateWithParentEventTouch(
+                  // Include masterConsignors: findOrCreateMasterConsignor writes that store
+                  // inside this transaction (events + consignors alone causes IDB objectStore error).
+                  await mutateWithEventTables(
                     db,
                     currentEventId,
-                    "consignors",
+                    [db.consignors, db.masterConsignors],
                     async () => {
                       for (const r of toAdd) {
                         const row: Consignor = {

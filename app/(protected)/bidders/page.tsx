@@ -19,7 +19,10 @@ import { useCloudSync } from "@/components/providers/CloudSyncProvider";
 import { useUserDb } from "@/components/providers/UserDbProvider";
 import { downloadCsv } from "@/lib/services/csvExporter";
 import { parseBidderCsv } from "@/lib/services/csvImportBidders";
-import { mutateWithParentEventTouch } from "@/lib/db/mutateWithParentEventTouch";
+import {
+  mutateWithEventTables,
+  mutateWithParentEventTouch,
+} from "@/lib/db/mutateWithParentEventTouch";
 import { flushSingleEventToCloudSnapshot } from "@/lib/services/cloudSync";
 import { findOrCreateMasterBidder } from "@/lib/directory/upsert";
 import { publishDirectoryChanges } from "@/lib/directory/sync";
@@ -114,10 +117,12 @@ export default function BiddersPage() {
                     return true;
                   });
                   const now = new Date();
-                  await mutateWithParentEventTouch(
+                  // Include masterBidders: findOrCreateMasterBidder writes that store
+                  // inside this transaction (events + bidders alone causes IDB objectStore error).
+                  await mutateWithEventTables(
                     db,
                     currentEventId,
-                    "bidders",
+                    [db.bidders, db.masterBidders],
                     async () => {
                       for (const r of toAdd) {
                         const master = await findOrCreateMasterBidder(db, {

@@ -457,3 +457,56 @@ describe("mergeDirectorySnapshot", () => {
     expect(same?.firstName).toBe("New");
   });
 });
+
+describe("CSV import transaction scope", () => {
+  it("findOrCreateMasterBidder fails inside events+bidders-only transaction", async () => {
+    const eventId = (await db.events.add({
+      name: "A",
+      organizationName: "Org",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+
+    await expect(
+      db.transaction("rw", [db.events, db.bidders], async () => {
+        await findOrCreateMasterBidder(db, {
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@example.com",
+        });
+      })
+    ).rejects.toThrow(/objectStore|object store/i);
+
+    // Import must include masterBidders in the same transaction.
+    await db.transaction(
+      "rw",
+      [db.events, db.bidders, db.masterBidders],
+      async () => {
+        await db.events.update(eventId, { updatedAt: new Date() });
+        const master = await findOrCreateMasterBidder(db, {
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@example.com",
+        });
+        await db.bidders.add({
+          eventId,
+          paddleNumber: 101,
+          firstName: "Jane",
+          lastName: "Doe",
+          email: "jane@example.com",
+          masterSyncKey: master.syncKey,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    );
+
+    expect(await db.bidders.count()).toBe(1);
+    expect(await db.masterBidders.count()).toBe(1);
+  });
+});
